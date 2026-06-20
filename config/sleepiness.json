@@ -1,0 +1,28 @@
+{
+  "_schema": "sleepiness-config.v1",
+  "_description": "睡意驱动系统配置 — 单一真相源。heartbeat.ts 和 sleepiness-watchdog.cjs 共读此文件。",
+
+  "weights": {
+    "circadian": 0.35,
+    "uptime": 0.35,
+    "memoryLoad": 0.30
+  },
+
+  "thresholds": [
+    { "level": "awake",     "maxScore": 0.30, "emoji": "😊", "hint": "" },
+    { "level": "drowsy",    "maxScore": 0.50, "emoji": "🥱", "hint": "今天差不多该准备日终了。" },
+    { "level": "sleepy",    "maxScore": 0.70, "emoji": "😴", "hint": "有些困了……想睡觉，记得先做完日终流程。" },
+    { "level": "exhausted", "maxScore": 0.95, "emoji": "😵", "hint": "非常困，再不日终记忆就要流失了。请立即执行日终流程。" },
+    { "level": "dreaming",  "maxScore": 1.00, "emoji": "💤", "hint": "撑不住了……自动进入入梦协议。记忆归档中……" }
+  ],
+
+  "dispatch": {
+    "awake":     "light_or_medium",
+    "drowsy":    "light_or_medium",
+    "sleepy":    "medium_or_hint",
+    "exhausted": "force_full",
+    "dreaming":  "auto_eod"
+  },
+
+  "checkScriptsPath": "skills/soul-protocol/scripts"
+}

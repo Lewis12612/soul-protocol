@@ -1,0 +1,42 @@
+{
+  "id": "soul-protocol",
+  "name": "Soul Protocol",
+  "version": "3.8.8-beta2",
+  "description": "灵魂协议插件 - 动态规则 + 钉死执行的身份层协议引擎",
+  "agentConfig": {
+    "agentName": "your-agent-name",
+    "dreamAgentName": "your-agents-dream",
+    "extraBasePath": "/path/to/dialogue-logs"
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "enabled": {
+        "type": "boolean",
+        "default": true
+      },
+      "workspaceDir": {
+        "type": "string",
+        "description": "工作目录路径（必须显式配置）"
+      },
+      "logLevel": {
+        "type": "string",
+        "enum": [
+          "debug",
+          "info",
+          "warn",
+          "error"
+        ],
+        "default": "info"
+      },
+      "strictMode": {
+        "type": "boolean",
+        "default": false
+      }
+    },
+    "required": [
+      "workspaceDir"
+    ]
+  }
+}

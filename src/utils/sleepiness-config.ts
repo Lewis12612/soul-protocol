@@ -21,6 +21,15 @@ export interface LoggingConfig {
   };
 }
 
+export interface ProtocolVerificationConfig {
+  light?: { stale_minutes: number };
+  medium?: { l2_stale_hours: number; format_sections: string[] };
+  full?: { stale_hours: number; max_retry: number };
+  weekly?: { trigger_days: number[]; required_content: string[] };
+  monthly?: { trigger_day_min: number };
+  yearly?: { trigger_month: number };
+}
+
 export interface SleepinessConfig {
   weights: { circadian: number; uptime: number; memoryLoad: number };
   thresholds: Array<{
@@ -33,6 +42,7 @@ export interface SleepinessConfig {
   checkScriptsPath: string;
   spawn?: { timeoutSeconds: Record<string, number> };
   logging?: LoggingConfig;
+  protocol_verification?: ProtocolVerificationConfig;
 }
 
 // ── 日志配置默认值 ────────────────────────────────────────────────────

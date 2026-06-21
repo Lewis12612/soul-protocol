@@ -160,8 +160,13 @@ function check() {
     });
   }
 
-  // ── 验证闭环：检查注入后是否真正执行 ────────────────────────────────
-  verifyEodExecution();
+  // ── 协议执行验证（统一调度） ──────────────────────────────────────
+  verifyProtocolExecution("full");
+  verifyProtocolExecution("light");
+  verifyProtocolExecution("medium");
+  verifyProtocolExecution("weekly");
+  verifyProtocolExecution("monthly");
+  verifyProtocolExecution("yearly");
 }
 
 // ── 轻量 JSONL 日志包装（对齐现有 logEvent） ───────────────────────────
@@ -178,21 +183,239 @@ function writeJsonLog(mod, evt, msg, ctx) {
   logEvent(mod, evt, levelMap[evt] || "info", msg, ctx);
 }
 
+// ── Light 协议 C 层验证 ──────────────────────────────────────────────────
+
+/**
+ * 验证 Light 协议输出 — 检查 SESSION-STATE 心跳状态表是否在最近 1 小时内更新。
+ *
+ * Light 协议太频繁（30min），不做独立 turn，只做 C 层验证。
+ * 验证标准：SESSION-STATE.md 中的 last_light 标记是否在 1 小时内。
+ */
+function verifyLightOutput(config) {
+  const stateFile = path.join(WORKSPACE_DIR, "SESSION-STATE.md");
+  if (!fs.existsSync(stateFile)) {
+    writeJsonLog("light", "step_fail", "SESSION-STATE 不存在");
+    return;
+  }
+  let content;
+  try {
+    content = fs.readFileSync(stateFile, "utf-8");
+  } catch {
+    writeJsonLog("light", "step_fail", "SESSION-STATE 无法读取");
+    return;
+  }
+  // 检查 last_light 标记是否在 1 小时内
+  const match = content.match(/\| last_light \| (.+?) \|/);
+  if (!match) {
+    writeJsonLog("light", "step_fail", "SESSION-STATE 缺少 last_light 标记");
+    return;
+  }
+  const lastLight = new Date(match[1].trim());
+  if (isNaN(lastLight.getTime())) {
+    writeJsonLog("light", "step_fail", "last_light 时间戳无效", { raw: match[1].trim() });
+    return;
+  }
+  const hoursAgo = (Date.now() - lastLight.getTime()) / 3600000;
+  const staleMinutes = config.stale_minutes || 60;
+  const minutesAgo = hoursAgo * 60;
+  if (minutesAgo > staleMinutes) {
+    writeJsonLog("light", "step_fail", "Light 检查超时", { minutes_since: Math.round(minutesAgo), threshold: staleMinutes });
+  } else {
+    writeJsonLog("light", "health_check", "Light 检查正常", { age_minutes: Math.round(minutesAgo) });
+  }
+}
+
+
+// ── Medium 协议 C 层验证 ───────────────────────────────────────────────
+
+/**
+ * 验证 Medium 协议输出 — 检查 L2 格式完整性 + 新鲜度。
+ *
+ * @param {object} config - protocol_verification.medium 配置
+ *   - format_sections: 必需段落列表
+ *   - l2_stale_hours: L2 新鲜度阈值（小时）
+ */
+function verifyMediumOutput(config) {
+  const today = new Date().toISOString().slice(0, 10);
+  const l2File = path.join(WORKSPACE_DIR, "memory", `${today}.md`);
+
+  if (!fs.existsSync(l2File)) {
+    writeJsonLog("medium", "step_fail", "L2 文件不存在");
+    return;
+  }
+
+  // ── 检查格式段落 ──────────────────────────────────────────────────
+  const sections = config.format_sections || ["长期项目追踪","待办清单状态","续接点建议","文件位置速查"];
+  let content;
+  try {
+    content = fs.readFileSync(l2File, "utf-8");
+  } catch {
+    writeJsonLog("medium", "step_fail", "L2 文件无法读取");
+    return;
+  }
+
+  const missing = sections.filter(s => !content.includes(s));
+  if (missing.length > 0) {
+    writeJsonLog("medium", "step_fail", "L2 格式缺失段落", { missing });
+  }
+
+  // ── 检查 L2 新鲜度 ────────────────────────────────────────────────
+  const staleHours = config.l2_stale_hours || 4;
+  try {
+    const stat = fs.statSync(l2File);
+    const hoursAgo = (Date.now() - stat.mtimeMs) / 3600000;
+    if (hoursAgo > staleHours) {
+      writeJsonLog("medium", "health_warn", `L2 超过${Math.round(hoursAgo)}小时未更新`, { hours_since: Math.round(hoursAgo), threshold: staleHours });
+    } else {
+      writeJsonLog("medium", "health_check", "L2 新鲜度正常", { age_hours: Math.round(hoursAgo * 10) / 10 });
+    }
+  } catch {
+    writeJsonLog("medium", "step_fail", "L2 统计信息获取失败");
+  }
+}
+
+// ── C层：Monthly 输出验证 ────────────────────────────────────────────
+
+/**
+ * 验证月凝练产出物。
+ * 月末 (28-31) 检查 monthly 文件是否存在；非月末仅记录状态。
+ */
+function verifyMonthlyOutput(config) {
+  const today = new Date();
+  const year = today.getFullYear();
+  const month = String(today.getMonth() + 1).padStart(2, "0");
+  const monthlyFile = path.join(WORKSPACE_DIR, "memory", "memory-core", "monthly",
+    String(year), `${year}-${month}.md`);
+
+  if (!fs.existsSync(monthlyFile)) {
+    if (today.getDate() >= (config.trigger_day_min || 28)) {
+      // 月末才报 fail（阈值从配置读取）
+      writeJsonLog("monthly", "step_fail", "月凝练未执行", { month: `${year}-${month}` });
+    }
+    return;
+  }
+  writeJsonLog("monthly", "step_done", "月凝练完成", { month: `${year}-${month}` });
+}
+
+
+// ── 协议执行验证统一调度 ───────────────────────────────────────────────
+
+/**
+ * 统一协议验证调度器 — 从 config/sleepiness.json 读取各协议验证配置，
+ * 分发到对应的 verifyXxxOutput 函数。
+ *
+ * @param {string} type - 协议类型: light|medium|full|weekly|monthly|yearly
+ */
+function verifyProtocolExecution(type) {
+  const config = loadConfig().protocol_verification?.[type];
+  if (!config) return;
+
+  switch (type) {
+    case "light":   return verifyLightOutput(config);
+    case "medium":  return verifyMediumOutput(config);
+    case "full":    return verifyEodExecution(config);
+    case "weekly":  return verifyWeeklyOutput(config);
+    case "monthly": return verifyMonthlyOutput(config);
+    case "yearly":  return verifyYearlyOutput(config);
+  }
+}
+
+// ── C层：Yearly 输出验证 ─────────────────────────────────────────────
+
+/**
+ * 验证年凝练产出物。
+ * 年末 (12月) 检查 yearly 文件是否存在；非年末仅记录状态。
+ */
+function verifyYearlyOutput(config) {
+  const today = new Date();
+  const year = today.getFullYear();
+  const yearlyFile = path.join(WORKSPACE_DIR, "memory", "memory-core", "yearly",
+    `${year}.md`);
+
+  if (!fs.existsSync(yearlyFile)) {
+    if (today.getMonth() === (config.trigger_month ?? 11)) {
+      // 年末才报 fail（月份从配置读取，默认 11=December）
+      writeJsonLog("yearly", "step_fail", "年凝练未执行", { year: String(year) });
+    }
+    return;
+  }
+  writeJsonLog("yearly", "step_done", "年凝练完成", { year: String(year) });
+}
+
+// ── C层：Weekly 协议输出验证 ────────────────────────────────────────────
+
+/**
+ * 验证 Weekly 协议输出 — 检查本周 weekly.md 是否存在且完整（W1+W2）。
+ *
+ * 验证标准：
+ *   - 文件不存在 + 周末 → step_fail（应该已执行）
+ *   - 文件不存在 + 非周末 → 不告警（正常，还没到周末）
+ *   - 文件存在但缺 W1(周叙事) 或 W2(L4演化) → step_fail
+ *   - W1+W2 齐全 → step_done
+ */
+function verifyWeeklyOutput(config) {
+  const today = new Date();
+  const year = today.getFullYear();
+  const weekNum = getISOWeekNumber(today);
+  const weeklyDir = path.join(WORKSPACE_DIR, "memory", "memory-core", "weekly", String(year));
+  const weeklyFile = path.join(weeklyDir, `${year}-W${String(weekNum).padStart(2, '0')}.md`);
+
+  if (!fs.existsSync(weeklyFile)) {
+    // 仅触发日报 fail（从配置读取 trigger_days），工作日报 missing 正常
+    const day = today.getDay();
+    const triggerDays = config.trigger_days || [0, 6];
+    if (triggerDays.includes(day)) {
+      writeJsonLog("weekly", "step_fail", "周凝练未执行", { week: `W${weekNum}` });
+    }
+    return;
+  }
+
+  // 检查 W1（叙事）+ W2（L4 演化）是否都完成
+  let content;
+  try {
+    content = fs.readFileSync(weeklyFile, "utf-8");
+  } catch {
+    writeJsonLog("weekly", "step_fail", "周凝练文件无法读取", { week: `W${weekNum}` });
+    return;
+  }
+  const hasW1 = content.includes("W1") || content.includes("周叙事");
+  const hasW2 = content.includes("W2") || content.includes("L4 演化");
+
+  if (hasW1 && hasW2) {
+    writeJsonLog("weekly", "step_done", "周凝练完成", { week: `W${weekNum}` });
+  } else {
+    writeJsonLog("weekly", "step_fail", "周凝练不完整", {
+      week: `W${weekNum}`,
+      required: config.required_content || ["W1", "W2"],
+    });
+  }
+}
+
+/**
+ * ISO 周数计算（与 date +%V 一致）
+ */
+function getISOWeekNumber(d) {
+  const date = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
+  date.setUTCDate(date.getUTCDate() + 4 - (date.getUTCDay() || 7));
+  const yearStart = new Date(Date.UTC(date.getUTCFullYear(), 0, 1));
+  return Math.ceil((((date - yearStart) / 86400000) + 1) / 7);
+}
+
 // ── EOD 执行验证闭环 ────────────────────────────────────────────────────
 
 /**
  * 检查 last-eod.json 是否超过 24 小时未更新。
  * 仅在 eod-pending.json 不存在时调用 —— 可能是系统静默故障。
  */
-function checkLastEodStale() {
+function checkLastEodStale(staleHours) {
   const lastEodFile = path.join(WORKSPACE_DIR, "memory", ".heartbeat", "last-eod.json");
   if (!fs.existsSync(lastEodFile)) return;
   try {
     const lastEod = JSON.parse(fs.readFileSync(lastEodFile, "utf-8"));
     const hoursSinceLast = (Date.now() - lastEod.last_eod_time) / 3600000;
-    if (hoursSinceLast > 24) {
+    if (hoursSinceLast > staleHours) {
       console.error(`[soul-protocol] WARNING: last-eod 超过 ${Math.round(hoursSinceLast)} 小时未更新`);
-      writeJsonLog("watchdog", "health_warn", "last-eod超过24h未更新，可能系统静默故障", {
+      writeJsonLog("watchdog", "health_warn", `last-eod超过${staleHours}h未更新，可能系统静默故障`, {
         hours_since: Math.round(hoursSinceLast),
       });
     }
@@ -271,12 +494,12 @@ function verifySpawnOutput() {
  *       C1. 已执行 → 正常清理
  *       C2. 未执行 → retry_count++ → retry<3 重置标记重新注入 / retry≥3 放弃
  */
-function verifyEodExecution() {
+function verifyEodExecution(config) {
   const pendingFile = path.join(WORKSPACE_DIR, "memory", ".heartbeat", "eod-pending.json");
 
   // ── 路径 A：eod-pending 不存在 ──────────────────────────────────────
   if (!fs.existsSync(pendingFile)) {
-    checkLastEodStale();
+    checkLastEodStale(config.stale_hours || 24);
     return;
   }
 
@@ -320,8 +543,9 @@ function verifyEodExecution() {
     // ── C2：日终未执行 → retry ─────────────────────────────────────
     const retry = (pending.retry_count || 0) + 1;
     pending.retry_count = retry;
+    const maxRetry = config.max_retry || 3;
 
-    if (retry >= 3) {
+    if (retry >= maxRetry) {
       // 放弃：避免死循环
       console.error(`[soul-protocol] CRITICAL: EOD ${retry}次重试失败，已放弃。请手动检查记忆完整性。`);
       writeJsonLog("watchdog", "critical", `EOD ${retry}次重试失败，放弃自动重试`, {
@@ -369,12 +593,6 @@ process.stdin.resume();
 
 function cleanup() {
   logEvent("watchdog", "executed", "info", "守护进程退出");
-  try { if (fs.existsSync(PID_FILE)) fs.unlinkSync(PID_FILE); } catch {}
-  process.exit(0);
-}
-process.on("SIGTERM", cleanup);
-process.on("SIGINT", cleanup);
-info", "守护进程退出");
   try { if (fs.existsSync(PID_FILE)) fs.unlinkSync(PID_FILE); } catch {}
   process.exit(0);
 }

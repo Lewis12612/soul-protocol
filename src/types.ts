@@ -86,7 +86,7 @@ export interface DispatchContext {
   checkType?: "light" | "medium" | "full";
   workspaceDir: string;
   result?: Record<string, unknown>;
-  /** V3.8.8-beta3: 用户消息文本（conversation 场景时传入，用于 intent-resolver） */
+  /** V3.8.8-beta2: 用户消息文本（conversation 场景时传入，用于 intent-resolver） */
   userMessage?: string;
 }
 

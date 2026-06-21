@@ -1,8 +1,8 @@
-# Soul Protocol Plugin
+# Soul Protocol Plugin — V3.8.8-beta4（功能实现版本，未完整测试）
 
 > Dynamic rules + hardwired execution + sleepiness-driven identity-layer protocol engine
 
-**Version**: 3.8.8-beta3 | **License**: MIT | **Zero npm production dependencies. Runtime system dependencies listed below.**
+**Version**: 3.8.8-beta2 | **License**: MIT | **Zero npm production dependencies. Runtime system dependencies listed below.**
 
 ---
 

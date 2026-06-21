@@ -19,6 +19,7 @@ EXTRA_DIR="${EXTRA_BASE_PATH:-${HOME}/dialogue-logs}"
 
 CURRENT_DATE=$(date +%Y-%m-%d)
 CURRENT_TIME=$(date -Iseconds)
+CURRENT_TS=$(date +%s)
 YEAR=$(date +%Y)
 MONTH=$(date +%m)
 WEEK=$(date +%V)
@@ -196,6 +197,51 @@ check_l2_for_date() {
 
 check_l2_handover() {
     check_l2_for_date "$CURRENT_DATE"
+}
+
+# ========================
+# D层锚点：L2 格式校验（V3.8.8-beta3 D层）
+# ========================
+check_l2_format() {
+    local l2_file="$MEMORY_DIR/$CURRENT_DATE.md"
+    local format_valid=true
+    local issues_json="[]"
+
+    if [ ! -f "$l2_file" ]; then
+        format_valid=false
+        issues_json="[\"L2文件不存在\"]"
+        echo "{\"format_valid\": $format_valid, \"format_issues\": $issues_json}"
+        return
+    fi
+
+    # 检查必需段落（从 sleepiness.json 配置读取，默认 4 个核心段落）
+    local config_file="$WORKSPACE/skills/soul-protocol/config/sleepiness.json"
+    local format_sections_json=$(jq -r '.protocol_verification.medium.format_sections' "$config_file" 2>/dev/null)
+    if [ -z "$format_sections_json" ] || [ "$format_sections_json" = "null" ]; then
+        format_sections_json='["长期项目追踪","待办清单状态","续接点建议","文件位置速查"]'
+    fi
+
+    local section_count=$(echo "$format_sections_json" | jq -r 'length')
+    local missing=()
+    for i in $(seq 0 $((section_count - 1))); do
+        local section=$(echo "$format_sections_json" | jq -r ".[$i]")
+        if ! grep -qE "^###?\s+.*${section}" "$l2_file" && ! grep -qF "$section" "$l2_file"; then
+            format_valid=false
+            missing+=("$section")
+        fi
+    done
+
+    if [ "$format_valid" = false ]; then
+        issues_json="["
+        local first=true
+        for m in "${missing[@]}"; do
+            if [ "$first" = true ]; then first=false; else issues_json+=", "; fi
+            issues_json+="\"$m\""
+        done
+        issues_json+="]"
+    fi
+
+    echo "{\"format_valid\": $format_valid, \"format_issues\": $issues_json}"
 }
 
 # ========================
@@ -379,8 +425,47 @@ check_month_end() {
     if [ -f "$monthly_file" ]; then
         monthly_exists=true
     fi
+
+    # D层锚点：统计本月 weekly 文件完成数量
+    local weeks_done=0
+    local weeks_total=0
+    local days_in_month=$(date -d "$(date -d "next month" +%Y-%m-01) -1 day" +%d 2>/dev/null || date -d "$(date -d "next month" +%Y-%m-01) -1 day" +%d)
+    # 计算本月覆盖的 ISO 周数（用 Python 或内联 jq 过于复杂，简化为 4-5 周）
+    local weeks_estimated=0
+    for d in $(seq 1 $days_in_month); do
+        local dt="${month_year}-${month_num}-$(printf '%02d' $d)"
+        local wn=$(date -d "$dt" +%V 2>/dev/null || echo "")
+        if [ -n "$wn" ]; then
+            local wf="$MEMORY_CORE/weekly/$month_year/${month_year}-W${wn}.md"
+            if [ -f "$wf" ]; then
+                weeks_done=$((weeks_done + 1))
+            fi
+            weeks_total=$((weeks_total + 1))
+        fi
+    done
+    # 去重：每周只计一次
+    local weekly_completion_ok=false
+    local all_weeklies_ready=false
+    # 简化：检查是否所有周都有文件
+    local unique_weeks_ok=0
+    local seen_weeks=""
+    for d in $(seq 1 $days_in_month); do
+        local dt="${month_year}-${month_num}-$(printf '%02d' $d)"
+        local wn=$(date -d "$dt" +%V 2>/dev/null || echo "")
+        if [ -n "$wn" ] && ! echo "$seen_weeks" | grep -qw "$wn"; then
+            seen_weeks="$seen_weeks $wn"
+            local wf="$MEMORY_CORE/weekly/$month_year/${month_year}-W${wn}.md"
+            if [ -f "$wf" ]; then
+                unique_weeks_ok=$((unique_weeks_ok + 1))
+            fi
+        fi
+    done
+    local unique_weeks_count=$(echo "$seen_weeks" | wc -w)
+    if [ "$unique_weeks_ok" -eq "$unique_weeks_count" ] && [ "$unique_weeks_count" -gt 0 ]; then
+        all_weeklies_ready=true
+    fi
     
-    echo "{\"is_month_end\": $is_month_end, \"current_date\": \"$CURRENT_DATE\", \"last_day_of_month\": \"$LAST_DAY_OF_MONTH\", \"month_num\": \"$month_num\", \"month_year\": \"$month_year\", \"monthly_file_exists\": $monthly_exists, \"monthly_file_path\": \"$monthly_file\"}"
+    echo "{\"is_month_end\": $is_month_end, \"current_date\": \"$CURRENT_DATE\", \"last_day_of_month\": \"$LAST_DAY_OF_MONTH\", \"month_num\": \"$month_num\", \"month_year\": \"$month_year\", \"monthly_file_exists\": $monthly_exists, \"monthly_file_path\": \"$monthly_file\", \"weekly_completion\": {\"weeks_done\": $unique_weeks_ok, \"weeks_total\": $unique_weeks_count, \"all_weeklies_ready\": $all_weeklies_ready}}"
 }
 
 check_year_end() {
@@ -400,8 +485,23 @@ check_year_end() {
     if [ -f "$yearly_file" ]; then
         yearly_exists=true
     fi
+
+    # D层锚点：统计本年 monthly 文件完成数量（1月～当前月）
+    local months_done=0
+    local months_total=$((10#$MONTH))  # 当前月（1-based）
+    local all_monthlies_ready=false
+    for m in $(seq 1 $months_total); do
+        local mn=$(printf '%02d' $m)
+        local mf="$MEMORY_CORE/monthly/$year_num/${year_num}-${mn}.md"
+        if [ -f "$mf" ]; then
+            months_done=$((months_done + 1))
+        fi
+    done
+    if [ "$months_done" -eq "$months_total" ] && [ "$months_total" -gt 0 ]; then
+        all_monthlies_ready=true
+    fi
     
-    echo "{\"is_year_end\": $is_year_end, \"current_date\": \"$CURRENT_DATE\", \"year_num\": \"$year_num\", \"yearly_file_exists\": $yearly_exists, \"yearly_file_path\": \"$yearly_file\"}"
+    echo "{\"is_year_end\": $is_year_end, \"current_date\": \"$CURRENT_DATE\", \"year_num\": \"$year_num\", \"yearly_file_exists\": $yearly_exists, \"yearly_file_path\": \"$yearly_file\", \"monthly_completion\": {\"months_done\": $months_done, \"months_total\": $months_total, \"all_monthlies_ready\": $all_monthlies_ready}}"
 }
 
 # ========================
@@ -463,6 +563,50 @@ MONTH_END_JSON=$(check_month_end)
 YEAR_END_JSON=$(check_year_end)
 ACTION_JSON=$(determine_action)
 
+# D层锚点：L2 格式校验
+L2_FORMAT_JSON=$(check_l2_format)
+
+# 构建 L2 锚点（last_update + hours_stale + 格式）
+L2_FILE="$MEMORY_DIR/$CURRENT_DATE.md"
+L2_LAST_UPDATE="null"
+L2_HOURS_STALE=0
+if [ -f "$L2_FILE" ]; then
+    L2_TS=$(stat -c %Y "$L2_FILE" 2>/dev/null || echo "0")
+    if [ "$L2_TS" -gt 0 ]; then
+        L2_LAST_UPDATE="\"$(date -Iseconds -d "@$L2_TS" 2>/dev/null || date -Iseconds)\""
+        L2_HOURS_STALE=$(awk -v now="$CURRENT_TS" -v ft="$L2_TS" 'BEGIN { printf "%.1f", (now - ft) / 3600 }')
+    fi
+fi
+L2_HS_CLEAN=$(echo "$L2_HOURS_STALE" | tr -d ' \n\r')
+[ -z "$L2_HS_CLEAN" ] && L2_HS_CLEAN=0
+L2_LINES=$(echo "$L2_HANDOVER_JSON" | jq -r '.lines // 0')
+L2_FV=$(echo "$L2_FORMAT_JSON" | jq -r '.format_valid')
+L2_FI=$(echo "$L2_FORMAT_JSON" | jq -c '.format_issues')
+
+# D层：Weekly 锚点（V3.8.8-beta3）
+WEEKLY_FILE_EXISTS=$(echo "$WEEK_END_JSON" | jq -r '.weekly_file_exists')
+LAST_EOD_TIME_STR="null"
+LAST_EOD_FILE="$STATE_DIR/last-eod.json"
+if [ -f "$LAST_EOD_FILE" ]; then
+  LAST_EOD_TS=$(jq -r '.last_eod_time // 0' "$LAST_EOD_FILE" 2>/dev/null || echo "0")
+  if [ "$LAST_EOD_TS" -gt 0 ] 2>/dev/null; then
+    LAST_EOD_TIME_STR="\"$(date -Iseconds -d "@$LAST_EOD_TS" 2>/dev/null || date -Iseconds)\""
+  fi
+fi
+# days_until_monday: 周日=1, 周六=2, ..., 周一=7（但我们算距下一个周一的距离）
+DAYS_UNTIL_MONDAY=$(( (8 - DAY_OF_WEEK) % 7 ))
+[ "$DAYS_UNTIL_MONDAY" -eq 0 ] && DAYS_UNTIL_MONDAY=7
+WEEKLY_ANCHORS_JSON=$(cat << WEOF
+{
+  "current_week": "W${WEEK}",
+  "weekend": $([ "$DAY_OF_WEEK" -eq 7 ] && echo "true" || echo "false"),
+  "last_full_eod": ${LAST_EOD_TIME_STR},
+  "weekly_file_exists": $WEEKLY_FILE_EXISTS,
+  "days_until_monday": $DAYS_UNTIL_MONDAY
+}
+WEOF
+)
+
 # 构建输出
 cat << EOF
 {
@@ -481,7 +625,17 @@ cat << EOF
   "l4_consolidation_due": $L4_CONSOLIDATION_JSON,
   "month_end": $MONTH_END_JSON,
   "year_end": $YEAR_END_JSON,
-  "action": $ACTION_JSON
+  "action": $ACTION_JSON,
+  "weekly_anchors": $WEEKLY_ANCHORS_JSON,
+  "protocol_anchors": {
+    "l2": {
+      "last_update": $L2_LAST_UPDATE,
+      "hours_stale": $L2_HS_CLEAN,
+      "lines": $L2_LINES,
+      "format_valid": $L2_FV,
+      "format_issues": $L2_FI
+    }
+  }
 }
 EOF
 

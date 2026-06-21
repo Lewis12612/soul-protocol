@@ -34,16 +34,11 @@ export type HeartbeatLogEntry = {
 
 // ── 公开 API ───────────────────────────────────────────────────────────
 
-/**
- * 更新 SESSION-STATE Light 心跳状态行
- * 替换 | Light | ... | ... | 行为当前时间戳
- */
-export async function updateSessionState(
-  workspaceDir: string,
-  reason: string,
-): Promise<void> {
-  const stateFile = path.join(workspaceDir, "SESSION-STATE.md");
-  const timestamp = new Date()
+// ── SESSION-STATE 管理（V3.8.8-beta3：工作记忆系统升级） ────────────
+
+/** 生成时间戳字符串（Asia/Shanghai, yyyy-MM-dd HH:mm:ss） */
+function formatTimestamp(): string {
+  return new Date()
     .toLocaleString("zh-CN", {
       timeZone: "Asia/Shanghai",
       year: "numeric",
@@ -54,31 +49,194 @@ export async function updateSessionState(
       second: "2-digit",
     })
     .replace(/\//g, "-");
+}
+
+/**
+ * 确保 SESSION-STATE.md 存在
+ * - 不存在 → 从模板创建，填充初始变量
+ * - 存在但缺少标记段 → 追加标记段（模板升级兼容）
+ * - 存在且标记完整 → 无操作
+ */
+export function ensureSessionState(workspaceDir: string): void {
+  const stateFile = path.join(workspaceDir, "SESSION-STATE.md");
+  const templatePath = path.join(
+    workspaceDir,
+    "skills",
+    "soul-protocol",
+    "templates",
+    "archive",
+    "session-state-template.md",
+  );
 
   try {
     if (!fs.existsSync(stateFile)) {
-      log.warn("SESSION-STATE 不存在，跳过更新");
+      // 从模板创建
+      const template = fs.existsSync(templatePath)
+        ? fs.readFileSync(templatePath, "utf-8")
+        : null;
+
+      if (!template) {
+        log.warn("SESSION-STATE 模板不存在，无法创建", { templatePath });
+        return;
+      }
+
+      const now = formatTimestamp();
+      const isoNow = new Date().toISOString();
+      const content = template
+        .replace(/\{\{light_time\}\}/g, now)
+        .replace(/\{\{medium_time\}\}/g, "未执行")
+        .replace(/\{\{full_time\}\}/g, "未执行")
+        .replace(/\{\{last_light\}\}/g, isoNow)
+        .replace(/\{\{last_medium\}\}/g, "");
+
+      fs.writeFileSync(stateFile, content, "utf-8");
+      log.info("✅ SESSION-STATE.md 已从模板创建");
       return;
     }
 
+    // 文件已存在：检查是否有标记段
     let content = fs.readFileSync(stateFile, "utf-8");
 
-    // 尝试替换 Light 行
-    const lightLine = `| Light | ${timestamp} | ✅ 已执行（${reason}） |`;
-    const replaced = content.replace(
-      /\| Light \| [^\|]* \| [^\|]* \|/,
+    if (!content.includes("<!-- HEARTBEAT_MARKERS_START -->")) {
+      // 模板可能过时，追加标记段
+      log.info("SESSION-STATE 缺少标记段，追加中...");
+      const isoNow = new Date().toISOString();
+      const markerSection = [
+        "",
+        "## ⚠️ 心跳标记",
+        "_以下由插件自动写入，LLM 无需编辑_",
+        "",
+        "<!-- HEARTBEAT_MARKERS_START -->",
+        "| 标记 | 值 |",
+        "|------|-----|",
+        `| last_light | ${isoNow} |`,
+        "| last_medium |  |",
+        "| protocol_turn_pending | false |",
+        "<!-- HEARTBEAT_MARKERS_END -->",
+      ].join("\n");
+
+      // 检查是否已有「心跳标记」标题（旧格式）
+      if (content.includes("心跳标记")) {
+        // 已有标题但缺少 HTML 注释标记，替换旧标记段
+        content = content.replace(
+          /## ⚠️ 心跳标记[\s\S]*$/,
+          markerSection,
+        );
+      } else {
+        content = content.trimEnd() + "\n" + markerSection + "\n";
+      }
+
+      fs.writeFileSync(stateFile, content, "utf-8");
+      log.info("✅ SESSION-STATE 标记段已追加");
+    }
+  } catch (err) {
+    log.warn("ensureSessionState 失败", { error: String(err) });
+  }
+}
+
+/**
+ * 更新 Light 心跳状态（Light 协议专用）
+ * - 更新心跳状态表中的 Light 行
+ * - 更新标记段中的 last_light
+ */
+export function updateSessionStateLight(
+  workspaceDir: string,
+  reason: string,
+): void {
+  ensureSessionState(workspaceDir);
+  const stateFile = path.join(workspaceDir, "SESSION-STATE.md");
+
+  try {
+    let content = fs.readFileSync(stateFile, "utf-8");
+    const now = formatTimestamp();
+
+    // 更新心跳状态表中的 Light 行
+    const lightLine = `| Light | ${now} | ✅ 已执行（${reason}） |`;
+    const replaced1 = content.replace(
+      /\| Light \| [^\n]*\|/,
       lightLine,
     );
 
-    if (replaced !== content) {
-      fs.writeFileSync(stateFile, replaced, "utf-8");
-      log.info("✅ SESSION-STATE Light 行已更新", { timestamp, reason });
+    if (replaced1 !== content) {
+      content = replaced1;
+      log.info("SESSION-STATE Light 行已更新", { timestamp: now, reason });
     } else {
-      log.warn("SESSION-STATE 中未找到 Light 行，跳过更新");
+      log.warn("SESSION-STATE 中未找到 Light 行");
     }
+
+    // 更新标记段中的 last_light
+    const isoNow = new Date().toISOString();
+    const replaced2 = content.replace(
+      /\| last_light \| [^\n]*\|/,
+      `| last_light | ${isoNow} |`,
+    );
+
+    if (replaced2 !== content) {
+      content = replaced2;
+    }
+
+    fs.writeFileSync(stateFile, content, "utf-8");
   } catch (err) {
-    log.warn("SESSION-STATE 更新失败", { error: String(err) });
+    log.warn("updateSessionStateLight 失败", { error: String(err) });
   }
+}
+
+/**
+ * 更新 Medium 心跳状态（Medium 协议专用）
+ * - 更新心跳状态表中的 Medium 行
+ * - 更新标记段中的 last_medium
+ */
+export function updateSessionStateMedium(
+  workspaceDir: string,
+  reason: string,
+): void {
+  ensureSessionState(workspaceDir);
+  const stateFile = path.join(workspaceDir, "SESSION-STATE.md");
+
+  try {
+    let content = fs.readFileSync(stateFile, "utf-8");
+    const now = formatTimestamp();
+
+    // 更新心跳状态表中的 Medium 行
+    const mediumLine = `| Medium | ${now} | ✅ 已执行（${reason}） |`;
+    const replaced1 = content.replace(
+      /\| Medium \| [^\n]*\|/,
+      mediumLine,
+    );
+
+    if (replaced1 !== content) {
+      content = replaced1;
+      log.info("SESSION-STATE Medium 行已更新", { timestamp: now, reason });
+    } else {
+      log.warn("SESSION-STATE 中未找到 Medium 行");
+    }
+
+    // 更新标记段中的 last_medium
+    const isoNow = new Date().toISOString();
+    const replaced2 = content.replace(
+      /\| last_medium \| [^\n]*\|/,
+      `| last_medium | ${isoNow} |`,
+    );
+
+    if (replaced2 !== content) {
+      content = replaced2;
+    }
+
+    fs.writeFileSync(stateFile, content, "utf-8");
+  } catch (err) {
+    log.warn("updateSessionStateMedium 失败", { error: String(err) });
+  }
+}
+
+/**
+ * @deprecated 使用 updateSessionStateLight / updateSessionStateMedium 代替
+ * 保留以兼容旧调用方
+ */
+export async function updateSessionState(
+  workspaceDir: string,
+  reason: string,
+): Promise<void> {
+  updateSessionStateLight(workspaceDir, reason);
 }
 
 /**

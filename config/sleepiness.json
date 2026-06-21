@@ -68,5 +68,29 @@
       "retentionDays": 30,
       "maxArchiveFiles": 50
     }
+  },
+  "protocol_verification": {
+    "_description": "协议验证统一配置 — watchdog.cjs verifyProtocolExecution 调度读取",
+    "light": {
+      "stale_minutes": 60
+    },
+    "medium": {
+      "l2_stale_hours": 4,
+      "format_sections": ["长期项目追踪","待办清单状态","续接点建议","文件位置速查"]
+    },
+    "full": {
+      "stale_hours": 24,
+      "max_retry": 3
+    },
+    "weekly": {
+      "trigger_days": [0,6],
+      "required_content": ["W1","W2"]
+    },
+    "monthly": {
+      "trigger_day_min": 28
+    },
+    "yearly": {
+      "trigger_month": 11
+    }
   }
 }

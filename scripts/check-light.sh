@@ -98,7 +98,55 @@ check_session_state() {
         done | jq -s '.')
     fi
     
-    echo "{\"exists\": true, \"session_date\": \"$session_date\", \"is_cross_day\": $is_cross_day, \"days_old\": $days_old, \"age_hours\": $age_hours, \"tasks\": $tasks}"
+    # 检查活跃任务数（匹配表格形如 | 1 | 任务名 | ... |）
+    local active_tasks=0
+    if [ -f "$SESSION_STATE" ]; then
+        active_tasks=$(grep -c "| [0-9]" "$SESSION_STATE" 2>/dev/null || echo "0")
+        # 排除模板行（活跃任务表格中的数字前导行）
+        [ "$active_tasks" -lt 0 ] && active_tasks=0
+    fi
+    
+    # 检查工作笔记是否为空
+    local notes_empty="true"
+    if [ -f "$SESSION_STATE" ]; then
+        local notes_content=$(sed -n '/## 📝 工作笔记/,/^## /p' "$SESSION_STATE" 2>/dev/null)
+        # 排除标题行和只含"暂无\|空\|*（"的行
+        local meaningful=$(echo "$notes_content" | grep -v "^## 📝 工作笔记" | grep -v "^$" | grep -v "暂无\|^\*（" | wc -l)
+        if [ "$meaningful" -gt 0 ]; then
+            notes_empty="false"
+        fi
+    fi
+    
+    # 检查心跳标记中的 last_light
+    local heartbeat_light="❌"
+    if [ -f "$SESSION_STATE" ]; then
+        if grep -q "| last_light | 20" "$SESSION_STATE" 2>/dev/null; then
+            heartbeat_light="✅"
+        fi
+    fi
+
+    # 计算工作笔记过时分钟数
+    local notes_stale_minutes=9999
+    if [ "$notes_empty" = "false" ] && [ "$age_seconds" -gt 0 ]; then
+        notes_stale_minutes=$((age_seconds / 60))
+    fi
+
+    # EXTRA 最新对话时间
+    local extra_last_conversation_minutes_ago=9999
+    local extra_base="${EXTRA_BASE_PATH:-${HOME}/dialogue-logs}"
+    local extra_today=$(date +%Y-%m-%d)
+    local extra_dir="${extra_base}/$(date +%Y)/$(date +%m)/${extra_today}"
+    if [ -d "$extra_dir" ]; then
+        local extra_last_file=$(ls -t "$extra_dir"/*.txt 2>/dev/null | head -1)
+        if [ -n "$extra_last_file" ] && [ -f "$extra_last_file" ]; then
+            local extra_last_time=$(stat -c "%Y" "$extra_last_file" 2>/dev/null)
+            if [ -n "$extra_last_time" ] && [ "$extra_last_time" -gt 0 ]; then
+                extra_last_conversation_minutes_ago=$(( (TODAY_TS - extra_last_time) / 60 ))
+            fi
+        fi
+    fi
+
+    echo "{\"exists\": true, \"session_date\": \"$session_date\", \"is_cross_day\": $is_cross_day, \"days_old\": $days_old, \"age_hours\": $age_hours, \"tasks\": $tasks, \"active_tasks\": $active_tasks, \"notes_empty\": $notes_empty, \"notes_stale_minutes\": $notes_stale_minutes, \"extra_last_conversation_minutes_ago\": $extra_last_conversation_minutes_ago, \"heartbeat_light\": \"$heartbeat_light\"}"
 }
 
 # ========================

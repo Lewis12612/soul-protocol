@@ -565,7 +565,7 @@ export function createBeforePromptBuildHook(pluginWorkspaceDir?: string) {
       }
     }
 
-    // V3.8.8-beta3: 提取最后一条用户消息文本（conversation 场景用于 intent-resolver）
+    // V3.8.8-beta2: 提取最后一条用户消息文本（conversation 场景用于 intent-resolver）
     let userMessage: string | undefined;
     if (scenario === "conversation" && event.messages?.length > 0) {
       const messages = event.messages as Array<{ role?: string; content?: unknown }>;

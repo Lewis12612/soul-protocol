@@ -12,6 +12,34 @@ import { loadSleepinessConfig } from "./utils/sleepiness-config.js";
 
 // ── 协议层类型定义 ──────────────────────────────────────────────────────
 
+/** D层锚点：L2 状态 */
+interface AnchorL2 {
+  last_update: string | null;
+  hours_stale: number;
+  lines: number;
+  format_valid: boolean;
+  format_issues: string[];
+}
+
+/** D层锚点：EXTRA 新鲜度 */
+interface AnchorExtra {
+  last_conversation: string | null;
+  unrecorded_hours: number;
+}
+
+/** D层锚点：SESSION-STATE */
+interface AnchorSessionState {
+  active_tasks: number;
+  stale: boolean;
+}
+
+/** D层锚点集合 */
+export interface ProtocolAnchors {
+  l2: AnchorL2;
+  extra?: AnchorExtra;
+  session_state?: AnchorSessionState;
+}
+
 interface ProtocolPrompt {
   protocol_id: string; // LP-{date} / MP-{date} / FP-{date}
   protocol_type: "light" | "medium" | "full" | "weekly";
@@ -308,11 +336,121 @@ function getProtocolDesc(type: "light" | "medium" | "full" | "weekly"): string {
   }
 }
 
+// ── D层锚点：协议锚点表渲染 ──────────────────────────────────────────
+
+/** 从 check_result 中提取 protocol_anchors */
+export function extractAnchors(result: Record<string, unknown>): ProtocolAnchors | null {
+  const raw = (result as any).protocol_anchors;
+  if (!raw || typeof raw !== "object") return null;
+  const pa = raw as any;
+  return {
+    l2: {
+      last_update: pa.l2?.last_update ?? null,
+      hours_stale: pa.l2?.hours_stale ?? 0,
+      lines: pa.l2?.lines ?? 0,
+      format_valid: pa.l2?.format_valid !== false,
+      format_issues: Array.isArray(pa.l2?.format_issues) ? pa.l2.format_issues : [],
+    },
+    extra: pa.extra ? {
+      last_conversation: pa.extra.last_conversation ?? null,
+      unrecorded_hours: pa.extra.unrecorded_hours ?? 0,
+    } : undefined,
+    session_state: pa.session_state ? {
+      active_tasks: pa.session_state.active_tasks ?? 0,
+      stale: pa.session_state.stale !== false,
+    } : undefined,
+  };
+}
+
+/** 判断锚点是否需要行动（有任何异常） */
+export function anchorsNeedAction(anchors: ProtocolAnchors): boolean {
+  if (!anchors.l2.format_valid) return true;
+  if (anchors.l2.hours_stale > 4) return true;
+  if (anchors.session_state && (anchors.session_state.active_tasks === 0 || anchors.session_state.stale)) return true;
+  return false;
+}
+
+/** 判断所有锚点是否都正常（无需渲染） */
+function anchorsAllNormal(anchors: ProtocolAnchors): boolean {
+  if (!anchors.l2.format_valid) return false;
+  if (anchors.l2.hours_stale >= 2) return false;
+  return true;
+}
+
+/** 渲染锚点表为 Markdown */
+function renderAnchorTable(anchors: ProtocolAnchors): string {
+  const lines: string[] = [];
+  lines.push("📊 协议锚点");
+  lines.push("| 指标 | 当前值 | 状态 |");
+  lines.push("|------|--------|------|");
+
+  // L2 最后更新
+  const l2 = anchors.l2;
+  if (l2.last_update) {
+    const staleH = l2.hours_stale;
+    const staleLabel = staleH > 4 ? "⚠️ 过期" : staleH >= 2 ? "💡 稍旧" : "✅ 新鲜";
+    const timeAgo = staleH >= 1 ? `${staleH.toFixed(1)}h前` : `${Math.round(staleH * 60)}min前`;
+    lines.push(`| L2 最后更新 | ${formatTimeShort(l2.last_update)} (${timeAgo}) | ${staleLabel} |`);
+  }
+
+  // L2 格式
+  if (!l2.format_valid) {
+    const missing = l2.format_issues.join(", ");
+    lines.push(`| L2 格式 | ❌ 不匹配模板 | 缺少: ${missing} |`);
+  } else {
+    lines.push(`| L2 格式 | ✅ 匹配模板 | 正常 |`);
+  }
+
+  // EXTRA 最后对话
+  if (anchors.extra?.last_conversation) {
+    const exh = anchors.extra.unrecorded_hours;
+    const extraLabel = exh > 0.5 ? "💡 有新对话未记录" : "✅ 已记录";
+    const extraAgo = exh >= 1 ? `${exh.toFixed(1)}h前` : `${Math.round(exh * 60)}min前`;
+    lines.push(`| EXTRA 最后对话 | ${formatTimeShort(anchors.extra.last_conversation)} (${extraAgo}) | ${extraLabel} |`);
+  }
+
+  // 工作记忆
+  if (anchors.session_state) {
+    const ss = anchors.session_state;
+    const taskLabel = ss.active_tasks === 0 ? "⚠️ 为空" : `✅ ${ss.active_tasks} 项进行中`;
+    lines.push(`| 工作记忆 | ${ss.active_tasks} 项活跃任务 | ${taskLabel} |`);
+  }
+
+  return lines.join("\n");
+}
+
+/** 将 ISO 时间戳格式化为 HH:mm 短格式 */
+function formatTimeShort(isoStr: string): string {
+  try {
+    const d = new Date(isoStr);
+    if (isNaN(d.getTime())) return isoStr;
+    const hh = String(d.getHours()).padStart(2, "0");
+    const mm = String(d.getMinutes()).padStart(2, "0");
+    return `${hh}:${mm}`;
+  } catch {
+    return isoStr;
+  }
+}
+
 // ── 渲染器 ─────────────────────────────────────────────────────────────
 
 /** 统一渲染器 — 将 ProtocolPrompt 对象渲染为完整协议文本（展示给用户 + 注入系统上下文） */
 function renderProtocolPrompt(protocol: ProtocolPrompt, sleepiness?: SleepinessState): string {
   const lines: string[] = [];
+
+  // D层锚点：注入协议锚点表（仅 medium/full）
+  if (protocol.protocol_type === "medium" || protocol.protocol_type === "full") {
+    const anchors = extractAnchors(protocol.check_result);
+    if (anchors && !anchorsAllNormal(anchors) && anchorsNeedAction(anchors)) {
+      lines.push(renderAnchorTable(anchors));
+      lines.push("");
+      // B层：Medium 锚点需要行动 → 强制 LLM 通过 tool 确认执行
+      if (protocol.protocol_type === "medium") {
+        lines.push("🛠️ **强制 Tool 调用**: 锚点显示需要行动。请调用 execute_protocol('medium') tool 确认执行。");
+        lines.push("");
+      }
+    }
+  }
 
   // 0. 协议类型标题（醒睡隐喻）
   lines.push(`【${getProtocolMarker(protocol.protocol_type)} ${getProtocolTitle(protocol.protocol_type)}】`);
@@ -407,7 +545,38 @@ function renderProtocolPrompt(protocol: ProtocolPrompt, sleepiness?: SleepinessS
     lines.push("");
   }
 
-  // 4. SESSION-STATE验证要求（固定）
+  // 4. 工作记忆锚点（Light 协议从 check-light.sh 获取 session_state 数据）
+  if (protocol.protocol_type === "light") {
+    const ss = (protocol.check_result as any).session_state as any;
+    if (ss) {
+      const taskCount = ss.active_tasks ?? "?";
+      const notesEmoji = ss.notes_empty === true ? "⚠️ 为空" : "有";
+      const notesStaleLabel = ss.notes_empty === true
+        ? ""
+        : ` (${ss.notes_stale_minutes ?? "?"}分钟未更新)`;
+      const lastConv = ss.extra_last_conversation_minutes_ago;
+      const lastConvLabel = lastConv != null && lastConv < 9999
+        ? `${lastConv} 分钟前`
+        : "无记录";
+
+      lines.push(`📋 便签状态`);
+      lines.push(`| 活跃任务 | ${taskCount} 项 |`);
+      lines.push(`| 工作笔记 | ${notesEmoji}${notesStaleLabel} |`);
+      lines.push(`| 最近对话 | ${lastConvLabel} |`);
+      lines.push("");
+
+      // 工作笔记为空且有未记录对话时，提示写入 SESSION-STATE
+      if (ss.notes_empty === true) {
+        lines.push(`→ 工作笔记为空且有未记录对话时：请将关键硬事实写入 SESSION-STATE 的「工作笔记」区`);
+        lines.push("");
+      } else {
+        lines.push(`→ 如有跨 turn 待办事项，请更新 SESSION-STATE 的「活跃任务」和「工作笔记」区域`);
+        lines.push("");
+      }
+    }
+  }
+
+  // 5. SESSION-STATE验证要求（固定）
   lines.push(`【⚡ SESSION-STATE强制验证】`);
   lines.push("本轮心跳必须验证以下内容：");
   lines.push("[1] 活跃任务状态 → 输出: [✓ 任务: XXX / 状态: XXX]");

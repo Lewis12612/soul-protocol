@@ -1,5 +1,5 @@
 // ───────────────────────────────────────────────────────────────────────
-// execute_protocol 工具 — LLM 主动调用协议通道（V3.8.8-beta3 修复）
+// execute_protocol 工具 — LLM 主动调用协议通道（V3.8.8-beta2 新增）
 //
 // 通过 api.registerTool() 注册，让 LLM 可以主动执行协议模块：
 // - full:           日终归档 (check-full.sh)
@@ -119,10 +119,34 @@ export function registerExecuteProtocolTool(api: OpenClawPluginApi): void {
       // ── 4. 更新状态 ──────────────────────────────────────────
       updateState(protocol as ProtocolType, workspaceDir);
 
-      // B层：对于 full 协议，记录 protocol:confirmed 确认日志
+      // B层：对于 full/medium 协议，记录 protocol:confirmed 确认日志
       if (protocol === "full") {
         logInfo("protocol", "confirmed", "LLM通过tool确认接收日终协议", {
           protocol: "full",
+          source: reason,
+        });
+      }
+      if (protocol === "medium") {
+        logInfo("protocol", "confirmed", "LLM通过tool确认接收Medium协议", {
+          protocol: "medium",
+          source: reason,
+        });
+      }
+      if (protocol === "weekly") {
+        logInfo("protocol", "confirmed", "LLM通过tool确认接收周凝练协议", {
+          protocol: "weekly",
+          source: reason,
+        });
+      }
+      if (protocol === "monthly") {
+        logInfo("protocol", "confirmed", "LLM通过tool确认接收月凝练协议", {
+          protocol: "monthly",
+          source: reason,
+        });
+      }
+      if (protocol === "yearly") {
+        logInfo("protocol", "confirmed", "LLM通过tool确认接收年凝练协议", {
+          protocol: "yearly",
           source: reason,
         });
       }

@@ -5,7 +5,7 @@
 
 import type { DispatchContext, ScenarioHandler } from "../types.js";
 import { createLogger, logInfo, logError, logWarn } from "../utils/logger.js";
-import { buildProtocol } from "../protocol.js";
+import { buildProtocol, extractAnchors, anchorsNeedAction } from "../protocol.js";
 import {
   updateSessionState,
   updateIndex,
@@ -114,8 +114,32 @@ export const heartbeatScenario: ScenarioHandler = {
         // action === "pass" → 什么都不做，继续睡意兜底
       }
 
+      // 2.5 A层：Weekly 独立 turn 检测
+      // 放在睡意检测之前，但仅在非 exhausted/dreaming 时触发
+      // 如果睡意 pending（exhausted/dreaming），先跑 Full → 下次心跳再跑 Weekly
+      const weeklySleepinessPreview = getSleepiness(workspaceDir);
+      if (
+        weeklySleepinessPreview.level !== "dreaming" &&
+        weeklySleepinessPreview.level !== "exhausted" &&
+        isWeekend() &&
+        lastEodCompleted(workspaceDir) &&
+        !weeklyAlreadyDone(workspaceDir)
+      ) {
+        writeProtocolTurnActive(workspaceDir, "weekly");
+        log.info("📅 A层: Weekly 独立 turn（周末 + Full 已完成 + Weekly 未执行）");
+        const weeklySystem = await buildWeeklyProtocolOnly(workspaceDir);
+        if (weeklySystem) {
+          return {
+            output: "",
+            data: {
+              prependSystemContext: weeklySystem,
+            },
+          };
+        }
+      }
+
       // 3. 睡意驱动：用户消息中也检测睡意（兜底机制）
-      const sleepiness = getSleepiness(workspaceDir);
+      const sleepiness = weeklySleepinessPreview; // 复用已获取的睡意，避免重复调用
       log.info("😴 对话中睡意检测", {
         level: sleepiness.level,
         score: sleepiness.score,
@@ -195,6 +219,17 @@ export const heartbeatScenario: ScenarioHandler = {
 
     log.info("✅ Light 检查完成", { durationMs: lightDuration });
 
+    // L1 A层：便签提醒 — "有对话但便签为空"时注入提醒文本
+    // 不创建独立 turn（太频繁会打断对话），只注入一行提醒
+    const lightAnchors = extractLightAnchors(lightResult);
+    if (lightAnchors && (
+      (lightAnchors.session_state.notes_empty && lightAnchors.session_state.extra_last_conversation_minutes_ago < 60) ||
+      (lightAnchors.session_state.active_tasks === 0 && lightAnchors.session_state.notes_stale_minutes > 120)
+    )) {
+      systemParts.push("📝 **便签提醒**: 你有新对话但 SESSION-STATE 工作笔记为空。请考虑记录关键硬事实。");
+      log.info("📝 A层: 便签提醒已注入 (notes_empty + recent conversation)");
+    }
+
     // ── 3. 硬编码自动化执行 ─────────────────────────────────────────
     const actions = (lightResult as any).required_actions as
       | Array<{ action: string; reason?: string }>
@@ -258,7 +293,36 @@ export const heartbeatScenario: ScenarioHandler = {
         const mediumResult = await executeCheckScriptWithLog(
           workspaceDir, "check-medium.sh", "medium", ctx.trigger,
         );
-        systemParts.push(buildProtocol("medium", mediumResult, workspaceDir, sleepiness));
+        // D层锚点：检查是否需要独立 turn
+        const mediumAnchors = extractAnchors(mediumResult);
+        if (mediumAnchors && anchorsNeedAction(mediumAnchors)) {
+          log.info("📋 D层锚点: Medium 需要行动 → 独立 turn 模式", {
+            formatValid: mediumAnchors.l2.format_valid,
+            hoursStale: mediumAnchors.l2.hours_stale,
+            activeTasks: mediumAnchors.session_state?.active_tasks,
+          });
+          writeProtocolTurnActive(workspaceDir, "medium");
+          const standaloneHeader = [
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            "⚠️ 当前轮为 Medium 协议执行轮",
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            "你必须按下方清单完成所有行动项后，以\"[✓ Medium协议执行完毕]\"结尾。",
+            "对话消息将在下一轮处理。本轮只执行协议，不回复用户对话。",
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            "",
+          ].join("\n");
+          systemParts.push(standaloneHeader);
+          systemParts.push(buildProtocol("medium", mediumResult, workspaceDir, sleepiness));
+          // 独立 turn: 跳过 memoryParts 注入 → 协议纯净上下文
+          const prependSystemContext = systemParts.join("\n\n");
+          await updateIndex(workspaceDir);
+          return {
+            output: `[📋 Medium 协议轮]`,
+            data: { prependSystemContext },
+          };
+        } else {
+          systemParts.push(buildProtocol("medium", mediumResult, workspaceDir, sleepiness));
+        }
       } else {
         systemParts.push(buildProtocol("light", lightResult, workspaceDir, sleepiness));
       }
@@ -270,7 +334,36 @@ export const heartbeatScenario: ScenarioHandler = {
         const mediumResult = await executeCheckScriptWithLog(
           workspaceDir, "check-medium.sh", "medium", ctx.trigger,
         );
-        systemParts.push(buildProtocol("medium", mediumResult, workspaceDir, sleepiness));
+        // D层锚点：检查是否需要独立 turn
+        const mediumAnchors = extractAnchors(mediumResult);
+        if (mediumAnchors && anchorsNeedAction(mediumAnchors)) {
+          log.info("📋 D层锚点: Medium 需要行动 → 独立 turn 模式", {
+            formatValid: mediumAnchors.l2.format_valid,
+            hoursStale: mediumAnchors.l2.hours_stale,
+            activeTasks: mediumAnchors.session_state?.active_tasks,
+          });
+          writeProtocolTurnActive(workspaceDir, "medium");
+          const standaloneHeader = [
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            "⚠️ 当前轮为 Medium 协议执行轮",
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            "你必须按下方清单完成所有行动项后，以\"[✓ Medium协议执行完毕]\"结尾。",
+            "对话消息将在下一轮处理。本轮只执行协议，不回复用户对话。",
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            "",
+          ].join("\n");
+          systemParts.push(standaloneHeader);
+          systemParts.push(buildProtocol("medium", mediumResult, workspaceDir, sleepiness));
+          // 独立 turn: 跳过 memoryParts 注入 → 协议纯净上下文
+          const prependSystemContext = systemParts.join("\n\n");
+          await updateIndex(workspaceDir);
+          return {
+            output: `[📋 Medium 协议轮]`,
+            data: { prependSystemContext },
+          };
+        } else {
+          systemParts.push(buildProtocol("medium", mediumResult, workspaceDir, sleepiness));
+        }
       } else {
         systemParts.push(buildProtocol("light", lightResult, workspaceDir, sleepiness));
       }
@@ -281,6 +374,93 @@ export const heartbeatScenario: ScenarioHandler = {
 
     // ── 6. SESSION-STATE 强制验证要求已包含在协议文本中（段5修正） ──
     log.info("✅ SESSION-STATE 强制验证要求已包含在协议中");
+
+    // ── 6.5 协议依赖链：检查周/月/年凝练（A 层独立 turn） ──────────
+    // 睡意驱动已处理 Full，此处处理 weekly/monthly/yearly 链
+    const pendingChain = resolvePendingProtocols(workspaceDir);
+    if (pendingChain.length > 0) {
+      const nextProtocol = pendingChain[0];
+      log.info("🔗 协议依赖链: 下一个待执行", {
+        protocol: nextProtocol,
+        fullChain: pendingChain,
+      });
+
+      // 执行 check-full.sh 获取状态数据
+      const chainFullResult = await executeCheckScriptWithLog(
+        workspaceDir, "check-full.sh", "full", "protocol_chain",
+      );
+
+      if (nextProtocol === "weekly") {
+        log.info("📅 A层: Weekly 独立 turn");
+        writeProtocolTurnActive(workspaceDir, "weekly");
+        const standaloneHeader = [
+          "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+          "⚠️ 当前轮为 Weekly 协议执行轮",
+          "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+          "",
+          "🛠️ **强制 Tool 调用**: 你必须首先调用 execute_protocol('weekly') tool 确认接收周凝练协议。",
+          "",
+          "你必须按下方清单完成所有行动项后，以\"[✓ 周梦协议执行完毕]\"结尾。",
+          "对话消息将在下一轮处理。本轮只执行协议，不回复用户对话。",
+          "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+          "",
+        ].join("\n");
+        systemParts.push(standaloneHeader);
+        const wp = buildWeeklyProtocol(chainFullResult, workspaceDir, sleepiness);
+        if (wp) systemParts.push(wp);
+        else systemParts.push("⚠️ 周凝练条件不满足（非周末或文件已存在），已跳过。");
+      } else if (nextProtocol === "monthly") {
+        log.info("📅 A层: Monthly 独立 turn");
+        writeProtocolTurnActive(workspaceDir, "monthly");
+        const standaloneHeader = [
+          "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+          "⚠️ 当前轮为 Monthly 协议执行轮",
+          "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+          "",
+          "🛠️ **强制 Tool 调用**: 你必须首先调用 execute_protocol('monthly') tool 确认接收月凝练协议。",
+          "",
+          "你必须按下方清单完成所有行动项后，以\"[✓ 月凝练协议执行完毕]\"结尾。",
+          "对话消息将在下一轮处理。本轮只执行协议，不回复用户对话。",
+          "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+          "",
+        ].join("\n");
+        systemParts.push(standaloneHeader);
+        const mp = buildMonthlyProtocol(chainFullResult, workspaceDir, sleepiness, true);
+        if (mp) systemParts.push(mp);
+        else systemParts.push("⚠️ 月凝练条件不满足（非月末或文件已存在），已跳过。");
+      } else if (nextProtocol === "yearly") {
+        log.info("📅 A层: Yearly 独立 turn");
+        writeProtocolTurnActive(workspaceDir, "yearly");
+        const standaloneHeader = [
+          "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+          "⚠️ 当前轮为 Yearly 协议执行轮",
+          "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+          "",
+          "🛠️ **强制 Tool 调用**: 你必须首先调用 execute_protocol('yearly') tool 确认接收年凝练协议。",
+          "",
+          "你必须按下方清单完成所有行动项后，以\"[✓ 年凝练协议执行完毕]\"结尾。",
+          "对话消息将在下一轮处理。本轮只执行协议，不回复用户对话。",
+          "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+          "",
+        ].join("\n");
+        systemParts.push(standaloneHeader);
+        const yp = buildYearlyProtocol(chainFullResult, workspaceDir, sleepiness, true);
+        if (yp) systemParts.push(yp);
+        else systemParts.push("⚠️ 年凝练条件不满足（非年末或文件已存在），已跳过。");
+      }
+
+      // 独立 turn: 跳过 memoryParts 注入 → 协议纯净上下文
+      const prependSystemContext = systemParts.join("\n\n");
+      await updateIndex(workspaceDir);
+      logInfo("heartbeat", "executed", `协议依赖链独立 turn: ${nextProtocol}`, {
+        protocol: nextProtocol,
+        fullChain: pendingChain,
+      });
+      return {
+        output: `[📅 ${nextProtocol.toUpperCase()} 协议轮]`,
+        data: { prependSystemContext },
+      };
+    }
 
     // ── 7. 增量注入：L2 最近记忆 ────────────────────────────────────
     const recentL2 = readRecentL2(workspaceDir);
@@ -515,6 +695,166 @@ function updateLastEodTime(workspaceDir: string): void {
   }
 }
 
+// ── D层锚点：协议独立 turn 辅助 ────────────────────────────────────
+
+/** 写入 protocol-turn-active 标记，使本轮成为独立协议执行轮 */
+function writeProtocolTurnActive(workspaceDir: string, protocol: string): void {
+  try {
+    const turnActivePath = path.join(workspaceDir, "memory", ".heartbeat", "protocol-turn-active.json");
+    const dir = path.dirname(turnActivePath);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    const tmpActivePath = turnActivePath + ".tmp";
+    fs.writeFileSync(tmpActivePath, JSON.stringify({
+      protocol,
+      created_at: new Date().toISOString(),
+    }, null, 2), "utf-8");
+    fs.renameSync(tmpActivePath, turnActivePath);
+    log.info("📋 A层: protocol-turn-active 标记已写入", { protocol });
+  } catch {
+    log.warn("⚠️ 写入 protocol-turn-active 失败");
+  }
+}
+
+// ── 协议依赖链（A 层：独立 turn 机制） ──────────────────────────────
+
+/**
+ * 全局协议依赖链解析。
+ * 按依赖顺序返回待执行的协议列表：weekly → monthly → yearly。
+ * 每个 turn 只执行链中第一个协议，执行后标记，下次心跳检查下一个。
+ */
+function resolvePendingProtocols(workspaceDir: string): string[] {
+  const chain: string[] = [];
+  const today = new Date();
+  const dayOfWeek = today.getDay();
+  const dayOfMonth = today.getDate();
+  const month = today.getMonth(); // 0-based (11 = December)
+
+  // Full: 永远最高优先级（睡意驱动，不在此处理）
+
+  // Weekly: 周末 + Weekly 文件不存在 → 加入链
+  if (dayOfWeek === 0 || dayOfWeek === 6) {
+    if (!weeklyAlreadyDone(workspaceDir)) chain.push("weekly");
+  }
+
+  // Monthly: 月末 (28-31) + 所有 Weekly 完成 → 加入链
+  if (dayOfMonth >= 28) {
+    if (allWeekliesDone(workspaceDir) && !monthlyAlreadyDone(workspaceDir)) {
+      chain.push("monthly");
+    }
+  }
+
+  // Yearly: 年末 (12月) + 所有 Monthly 完成 → 加入链
+  if (month === 11) {
+    if (allMonthliesDone(workspaceDir) && !yearlyAlreadyDone(workspaceDir)) {
+      chain.push("yearly");
+    }
+  }
+
+  return chain;
+}
+
+/** 检查当前周的 weekly 文件是否已存在 */
+function weeklyAlreadyDone(workspaceDir: string): boolean {
+  const now = new Date();
+  const wn = getWeekNumber(now);
+  const wy = String(now.getFullYear());
+  const wf = path.join(workspaceDir, "memory", "memory-core", "weekly", wy, `${wy}-W${wn}.md`);
+  return fs.existsSync(wf);
+}
+
+/** 检查当前月的 weekly 文件是否已存在 */
+function monthlyAlreadyDone(workspaceDir: string): boolean {
+  const now = new Date();
+  const y = String(now.getFullYear());
+  const m = String(now.getMonth() + 1).padStart(2, "0");
+  const mf = path.join(workspaceDir, "memory", "memory-core", "monthly", y, `${y}-${m}.md`);
+  return fs.existsSync(mf);
+}
+
+/** 检查当前年的 yearly 文件是否已存在 */
+function yearlyAlreadyDone(workspaceDir: string): boolean {
+  const now = new Date();
+  const y = String(now.getFullYear());
+  const yf = path.join(workspaceDir, "memory", "memory-core", "yearly", `${y}.md`);
+  return fs.existsSync(yf);
+}
+
+/**
+ * 检查当前月所有周的 weekly 文件是否都存在。
+ * 计算本月包含的 ISO 周，逐一检查文件存在性。
+ */
+function allWeekliesDone(workspaceDir: string): boolean {
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = now.getMonth(); // 0-based
+  const weeklyDir = path.join(workspaceDir, "memory", "memory-core", "weekly", String(year));
+
+  // 计算本月从第一天到最后一天覆盖的所有 ISO 周
+  const weeksInMonth = new Set<string>();
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+  for (let d = 1; d <= daysInMonth; d++) {
+    const dt = new Date(year, month, d);
+    const wn = getWeekNumber(dt);
+    weeksInMonth.add(wn);
+  }
+
+  // 检查每个周文件是否存在
+  let foundAny = false;
+  for (const wn of weeksInMonth) {
+    const wf = path.join(weeklyDir, `${year}-W${wn}.md`);
+    if (!fs.existsSync(wf)) return false;
+    foundAny = true;
+  }
+
+  // 如果本月没有任何周 → 不满足"全部完成"（兜底：至少要有 1 个）
+  return foundAny;
+}
+
+/**
+ * 检查当前年所有月的 monthly 文件是否都存在。
+ */
+function allMonthliesDone(workspaceDir: string): boolean {
+  const now = new Date();
+  const year = now.getFullYear();
+  const monthlyDir = path.join(workspaceDir, "memory", "memory-core", "monthly", String(year));
+
+  // 检查 1月～当前月的 monthly 文件
+  const currentMonth = now.getMonth() + 1; // 1-based
+  for (let m = 1; m <= currentMonth; m++) {
+    const mn = String(m).padStart(2, "0");
+    const mf = path.join(monthlyDir, `${year}-${mn}.md`);
+    if (!fs.existsSync(mf)) return false;
+  }
+
+  return true;
+}
+
+// ── L1 A层：Light 便签锚点提取 ──────────────────────────────────────
+
+/**
+ * 从 Light 检查结果中提取 session_state 锚点，用于 A 层便签维护提醒。
+ * 只在"有对话但便签为空"或"活跃任务为零且便签过时"时触发。
+ */
+function extractLightAnchors(lightResult: Record<string, unknown>): {
+  session_state: {
+    active_tasks: number;
+    notes_empty: boolean;
+    notes_stale_minutes: number;
+    extra_last_conversation_minutes_ago: number;
+  };
+} | null {
+  const ss = (lightResult as any).session_state;
+  if (!ss || typeof ss !== "object") return null;
+  return {
+    session_state: {
+      active_tasks: typeof ss.active_tasks === "number" ? ss.active_tasks : 0,
+      notes_empty: ss.notes_empty === true || ss.notes_empty === "true",
+      notes_stale_minutes: typeof ss.notes_stale_minutes === "number" ? ss.notes_stale_minutes : 9999,
+      extra_last_conversation_minutes_ago: typeof ss.extra_last_conversation_minutes_ago === "number" ? ss.extra_last_conversation_minutes_ago : 9999,
+    },
+  };
+}
+
 // ── 检查类型判断（保留 Medium 逻辑，移除硬编码日终窗口） ─────────────
 
 /**
@@ -708,4 +1048,57 @@ async function executeProtocolDirect(
       systemParts.push("【📝 指令协议 — L2 已创建】");
       break;
   }
+}
+
+// ── Weekly A层独立 turn 辅助函数 ──────────────────────────────────────
+
+/** 判断当前是否为周末（周六=6，周日=0） */
+function isWeekend(): boolean {
+  const day = new Date().getDay();
+  return day === 0 || day === 6;
+}
+
+/** 检查 last-eod.json 是否存在且为今日记录（Full EOD 已完成） */
+function lastEodCompleted(workspaceDir: string): boolean {
+  const eodPath = path.join(workspaceDir, LAST_EOD_FILE);
+  if (!fs.existsSync(eodPath)) return false;
+  try {
+    const raw = fs.readFileSync(eodPath, "utf-8");
+    const parsed = JSON.parse(raw) as { last_eod_time?: number };
+    if (!parsed.last_eod_time) return false;
+    // last_eod_time 必须是今天（避免跨日残留）
+    const eodDate = new Date(parsed.last_eod_time).toISOString().slice(0, 10);
+    return eodDate === getTodayStr();
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * 构建 Weekly 单独协议（A层独立 turn 使用）
+ * 只运行 check-full.sh 获取 anchors，生成 Weekly 协议文本。
+ * 不与 Full 协议混合——Full 优先由调用方保证。
+ */
+async function buildWeeklyProtocolOnly(workspaceDir: string): Promise<string> {
+  const fullResult = await executeCheckScriptWithLog(
+    workspaceDir, "check-full.sh", "full", "weekly_auto",
+  );
+  const protocolText = buildWeeklyProtocol(fullResult, workspaceDir);
+  if (!protocolText) return "";
+
+  const weeklyDue = (fullResult as any).weekly_due as Record<string, unknown> | undefined;
+  const wn = weeklyDue?.week_num || "?";
+  const wy = weeklyDue?.week_year || "?";
+
+  const header = [
+    "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+    `⚠️ 当前轮为 Weekly 协议执行轮（${wy}-W${wn} 周凝练）`,
+    "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+    "你必须按下方清单完成所有行动项后，以\"[✓ 周梦协议执行完毕]\"结尾。",
+    "对话消息将在下一轮处理。本轮只执行协议，不回复用户对话。",
+    "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+    "",
+  ].join("\n");
+
+  return header + "\n" + protocolText;
 }

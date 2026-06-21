@@ -3,9 +3,12 @@
 // 从 before-prompt-build.ts 提取的协议层逻辑
 // ───────────────────────────────────────────────────────────────────────
 
+import * as fs from "fs";
+import * as path from "path";
 import { getTodayStr } from "./modules/memory/reader.js";
 import type { SleepinessState } from "./modules/heartbeat.js";
 import { getAgentName, getSpawnExecutor } from "./utils/agent-config.js";
+import { loadSleepinessConfig } from "./utils/sleepiness-config.js";
 
 // ── 协议层类型定义 ──────────────────────────────────────────────────────
 
@@ -130,6 +133,24 @@ function extractMediumProtocol(
   };
 }
 
+/** 从 sleepiness.json 读取 spawn timeout 配置（P1：超时自动化） */
+function loadSpawnTimeouts(workspaceDir?: string): Record<string, number> {
+  const defaults: Record<string, number> = {
+    default: 120,
+    dailyArchive: 180,
+    deepArchive: 180,
+    workArchive: 180,
+  };
+  if (!workspaceDir) return defaults;
+  try {
+    const cfg = loadSleepinessConfig(workspaceDir);
+    if (cfg.spawn?.timeoutSeconds) {
+      return { ...defaults, ...cfg.spawn.timeoutSeconds };
+    }
+  } catch { /* 降级到默认值 */ }
+  return defaults;
+}
+
 /** 提取 Full 协议数据 */
 function extractFullProtocol(
   fullResult: Record<string, unknown>,
@@ -137,6 +158,9 @@ function extractFullProtocol(
 ): ProtocolPrompt {
   const currentDate =
     (fullResult.current_date as string) || getTodayStr();
+
+  // P1: 读取 spawn timeout 配置
+  const spawnTimeouts = loadSpawnTimeouts(workspaceDir);
 
   // 分段参数
   const segmentData = fullResult.segment as any;
@@ -168,7 +192,7 @@ function extractFullProtocol(
       output_format: "[✓ daily归档完成]",
       timeout: "2h",
       executor: getSpawnExecutor(),
-      spawn_instruction: "sessions_spawn(runtime=subagent, task=\"从EXTRA分段提取今日对话→daily-template格式(读取templates/archive/daily-template.md + templates/archive/dream-extract-prompt.md)\", timeoutSeconds=120)",
+      spawn_instruction: `sessions_spawn(runtime=subagent, task="从EXTRA分段提取今日对话→daily-template格式(读取templates/archive/daily-template.md + templates/archive/dream-extract-prompt.md)", timeoutSeconds=${spawnTimeouts.dailyArchive})`,
       operation_guide: "按消息单元切分EXTRA当日对话，阈值≤500行/段。格式参考: templates/archive/daily-template.md，提取指令: templates/archive/dream-extract-prompt.md",
     };
     if (segmentMode) dailyAction.segment = true;
@@ -194,7 +218,7 @@ function extractFullProtocol(
       output_format: "[✓ deep归档完成]",
       timeout: "2h",
       executor: getSpawnExecutor(),
-      spawn_instruction: "sessions_spawn(runtime=subagent, task=\"从EXTRA提取深度对话（概念辨析/顿悟/人格形成）→deep-dialogue格式(读取templates/archive/deep-template.md)\", timeoutSeconds=120)",
+      spawn_instruction: `sessions_spawn(runtime=subagent, task="从EXTRA提取深度对话（概念辨析/顿悟/人格形成）→deep-dialogue格式(读取templates/archive/deep-template.md)", timeoutSeconds=${spawnTimeouts.deepArchive})`,
       operation_guide: "从EXTRA原始对话提取深度内容（概念辨析/顿悟/人格形成），输出到deep-dialogue/YYYY/MM/YYYY-MM-DD.md",
     });
 
@@ -206,7 +230,7 @@ function extractFullProtocol(
       output_format: "[✓ work归档完成]",
       timeout: "2h",
       executor: getSpawnExecutor(),
-      spawn_instruction: "sessions_spawn(runtime=subagent, task=\"从EXTRA提取工作经验（错误修正/方法论）→work-dialogue格式(读取templates/archive/work-template.md)\", timeoutSeconds=120)",
+      spawn_instruction: `sessions_spawn(runtime=subagent, task="从EXTRA提取工作经验（错误修正/方法论）→work-dialogue格式(读取templates/archive/work-template.md)", timeoutSeconds=${spawnTimeouts.workArchive})`,
       operation_guide: "从EXTRA原始对话提取工作经验（错误修正/方法论），输出到work-dialogue/YYYY/MM/YYYY-MM-DD.md",
     });
 
@@ -217,7 +241,7 @@ function extractFullProtocol(
       reason: "日终",
       output_format: "[✓ EXTRA归档验证通过]",
       executor: getSpawnExecutor(),
-      spawn_instruction: "sessions_spawn(runtime=subagent, task=\"验证守护进程归档状态\", timeoutSeconds=60)",
+      spawn_instruction: `sessions_spawn(runtime=subagent, task="验证守护进程归档状态", timeoutSeconds=${spawnTimeouts.default})`,
       operation_guide: "检查守护进程是否正常归档EXTRA层对话",
     });
 
@@ -228,7 +252,7 @@ function extractFullProtocol(
       reason: "日终",
       output_format: "[✓ SESSION-STATE已清理]",
       executor: getSpawnExecutor(),
-      spawn_instruction: "sessions_spawn(runtime=subagent, task=\"迁移未完成任务→清空SESSION-STATE\", timeoutSeconds=60)",
+      spawn_instruction: `sessions_spawn(runtime=subagent, task="迁移未完成任务→清空SESSION-STATE", timeoutSeconds=${spawnTimeouts.default})`,
       operation_guide: "迁移未完成任务到L2跨日交接 → 清空SESSION-STATE.md",
     });
 
@@ -299,6 +323,10 @@ function renderProtocolPrompt(protocol: ProtocolPrompt, sleepiness?: SleepinessS
     lines.push("本我层(deep) → 原始欲望、深层冲动、自我认知");
     lines.push("超我层(work) → 道德约束、理想自我、方法论");
     lines.push("自我层(daily) → 现实适应、日常行为、人格温度");
+    lines.push("");
+    lines.push("⚠️ **强制执行指令**: 检测到日终协议注入。你必须在当前轮次中执行下方所有行动项，不得回复简略模板（如 HEARTBEAT_OK、Medium协议执行完毕 等）。未执行行动项将被系统标记为执行失败。");
+    lines.push("");
+    lines.push("🛠️ **强制 Tool 调用**: 你必须首先调用 execute_protocol('full') tool 确认接收日终协议。不调用此 tool 将被系统视为未执行。");
   }
   lines.push("");
 

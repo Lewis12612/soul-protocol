@@ -2,7 +2,7 @@
 
 > Dynamic rules + hardwired execution + sleepiness-driven identity-layer protocol engine
 
-**Version**: 3.8.8-beta2 | **License**: MIT | **Zero Production Dependencies**
+**Version**: 3.8.8-beta3 | **License**: MIT | **Zero npm production dependencies. Runtime system dependencies listed below.**
 
 ---
 
@@ -38,12 +38,7 @@ Memory flows bottom-up: daily conversations → nightly archiving → weekly ref
 # 1. Copy plugin
 cp -r soul-protocol/ $WORKSPACE/skills/
 
-# 2. Set up identity files
-cp examples/SOUL.example.md $WORKSPACE/SOUL.md
-cp examples/AGENTS.example.md $WORKSPACE/AGENTS.md
-# Edit these files to define your AI's personality
-
-# 3. Configure
+# 2. Configure
 cp openclaw.plugin.json.example openclaw.plugin.json
 # Edit: agentName, dreamAgentName, extraBasePath
 

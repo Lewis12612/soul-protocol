@@ -1,7 +1,7 @@
 # 梦提取指令模板
 
 > **用途**: spawn 子 Agent 时作为提取指令读取  
-> **位置**: `templates/dream-extract-prompt.md`
+> **位置**: `templates/archive/dream-extract-prompt.md`
 > **触发**: 日终 Full 协议 → spawn:{{agent}}的梦 → 读取此模板
 
 ---
@@ -18,7 +18,7 @@
 
 **定义**: 当日所有关键互动、温度瞬间、特征记录
 
-**格式**: 见 `templates/daily-template.md`
+**格式**: 见 `templates/archive/daily-template.md`
 
 **关注点**:
 - 关键决策和转折点
@@ -29,7 +29,7 @@
 
 **定义**: 影响人格/认知/关系的深度讨论
 
-**格式**: 见 `templates/deep-template.md`
+**格式**: 见 `templates/archive/deep-template.md`
 
 **判断标准**:
 - 涉及自我认知的讨论
@@ -41,7 +41,7 @@
 
 **定义**: 可复用的方法论、技术决策、错误修正
 
-**格式**: 见 `templates/work-template.md`
+**格式**: 见 `templates/archive/work-template.md`
 
 **判断标准**:
 - 可被未来参考的方法论

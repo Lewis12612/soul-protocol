@@ -18,8 +18,8 @@ import type {
   DispatchContext,
 } from "../types.js";
 import { dispatch } from "../hub.js";
-import { createLogger } from "../utils/logger.js";
-import { initAgentConfig } from "../utils/agent-config.js";
+import { createLogger, logInfo, logWarn } from "../utils/logger.js";
+import { initAgentConfig, getHomeDir } from "../utils/agent-config.js";
 import { buildProtocol } from "../protocol.js";
 import { buildWeeklyProtocol } from "../modules/memory/consolidation.js";
 import { getSleepiness } from "../modules/heartbeat.js";
@@ -70,7 +70,9 @@ function saveState(workspaceDir: string, state: PluginState): void {
   try {
     const dir = path.dirname(p);
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(p, JSON.stringify(state, null, 2), "utf-8");
+    const tmpPath = p + ".tmp";
+    fs.writeFileSync(tmpPath, JSON.stringify(state, null, 2), "utf-8");
+    fs.renameSync(tmpPath, p);
   } catch (err) {
     log.warn("状态保存失败", { error: String(err) });
   }
@@ -136,7 +138,7 @@ function ensureWatchdogAlive(workspaceDir: string): void {
 
 function ensureExtraAlive(workspaceDir: string): void {
   // 从 workspaceDir 推导 state 目录（~/.openclaw 或 ~/.openclaw-4.2）
-  const home = process.env.HOME || "/home/openclaw";
+  const home = getHomeDir();
   const stateDir = workspaceDir.includes(".openclaw-4.2")
     ? path.join(home, ".openclaw-4.2")
     : path.join(home, ".openclaw");
@@ -180,9 +182,7 @@ function resolveWorkspaceDir(
   if (pluginWorkspaceDir) return pluginWorkspaceDir;
   if (ctx.workspaceDir) return ctx.workspaceDir;
   if (process.env.OPENCLAW_WORKSPACE_DIR) return process.env.OPENCLAW_WORKSPACE_DIR;
-  const defaultDir = process.env.HOME
-    ? `${process.env.HOME}/.openclaw/workspace`
-    : "/tmp/openclaw-workspace";
+  const defaultDir = path.join(getHomeDir(), ".openclaw", "workspace");
   log.warn("workspaceDir 回退到默认值", { defaultDir });
   return defaultDir;
 }
@@ -371,6 +371,14 @@ export function createBeforePromptBuildHook(pluginWorkspaceDir?: string) {
     const trigger = ctx.trigger || "prompt";
     const msgCount = event.messages?.length ?? 0;
 
+    // ── A层：协议独立 turn 状态检查（必须在场景判断之前）──
+    // 如果上一轮是协议执行轮，本轮清除标记，正常处理用户消息
+    const protocolTurnActiveFile = path.join(workspaceDir, "memory", ".heartbeat", "protocol-turn-active.json");
+    if (fs.existsSync(protocolTurnActiveFile)) {
+      log.info("📋 A层: 检测到上一轮为协议执行轮，清除标记 → 正常对话处理");
+      try { fs.unlinkSync(protocolTurnActiveFile); } catch { /* 无权限等异常不阻塞 */ }
+    }
+
     // 首次调用时从文件加载状态
     if (!stateInitialized) {
       state = loadState(workspaceDir);
@@ -418,6 +426,16 @@ export function createBeforePromptBuildHook(pluginWorkspaceDir?: string) {
     // 优先执行 startup 全量注入（L3 INDEX + SESSION-STATE + 工作流文档）
     const eodPendingFile = path.join(workspaceDir, "memory", ".heartbeat", "eod-pending.json");
     const isStartup = msgCount <= 2 && state.lastMessageCount === -1;
+
+    // ── R5: startup 时清理残留的 protocol-turn-active 标记（A层兜底） ──
+    if (isStartup) {
+      const protocolTurnActiveFile = path.join(workspaceDir, "memory", ".heartbeat", "protocol-turn-active.json");
+      if (fs.existsSync(protocolTurnActiveFile)) {
+        log.info("🧹 A层兜底: startup 时清理残留 protocol-turn-active 标记");
+        try { fs.unlinkSync(protocolTurnActiveFile); } catch {}
+      }
+    }
+
     if (isStartup && fs.existsSync(eodPendingFile)) {
       log.info("🔔 eod-pending 存在但当前为 startup，推迟消费——优先全量注入");
     } else {
@@ -446,6 +464,10 @@ export function createBeforePromptBuildHook(pluginWorkspaceDir?: string) {
             level: pendingData.trigger_level,
             ageSeconds: Math.round(ageMs / 1000),
           });
+          logInfo("eod", "injected", "守护进程 eod-pending 协议直接注入", {
+            triggered_by: pendingData.triggered_by,
+            sleepiness: pendingData.sleepiness,
+          });
 
           // 构建 Full + Weekly 协议
           const sleepinessState = pendingData.sleepiness as any;
@@ -461,29 +483,55 @@ export function createBeforePromptBuildHook(pluginWorkspaceDir?: string) {
             sleepinessState,
           );
 
-          const prependSystemContext = [fullProtocol, weeklyProtocol]
+          // A层：协议轮独立注入头部
+          const protocolTurnHeader = [
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            "⚠️ 当前轮为协议执行轮",
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            "你必须按下方清单完成所有行动项后，以\"[✓ 日终协议执行完毕]\"结尾。",
+            "对话消息将在下一轮处理。本轮只执行协议，不回复用户对话。",
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            "",
+          ].join("\n");
+
+          const prependSystemContext = [
+            protocolTurnHeader,
+            fullProtocol,
+            weeklyProtocol,
+          ]
             .filter(Boolean)
             .join("\n\n");
 
-          // 标记已消费并清理
+          // 标记 eod-pending 为已注入（不更新 last-eod，不删除文件）
+          // last-eod 由 execute-protocol.ts 的 updateState 在 LLM 真正执行日终时才更新
           try {
-            // 更新 last-eod 时间防止 watchdog 重复触发
-            const lastEodFile = path.join(workspaceDir, "memory", ".heartbeat", "last-eod.json");
-            const lastEodDir = path.dirname(lastEodFile);
-            if (!fs.existsSync(lastEodDir)) fs.mkdirSync(lastEodDir, { recursive: true });
-            // 原子写入：先写临时文件，再 rename（防止并发写损坏）
-            const tmpPath = lastEodFile + ".tmp";
+            const tmpPath = eodPendingFile + ".tmp";
             fs.writeFileSync(tmpPath, JSON.stringify({
-              last_eod_time: Date.now(),
-              updated_at: new Date().toISOString(),
+              ...pendingData,
+              injected: true,
+              injected_at: new Date().toISOString(),
             }), "utf-8");
-            fs.renameSync(tmpPath, lastEodFile);
-            log.info("✅ last-eod 时间已更新（去重）");
-
-            fs.unlinkSync(eodPendingFile);
-            log.info("✅ 守护进程日终协议已注入并清理");
+            fs.renameSync(tmpPath, eodPendingFile);
+            log.info("✅ eod-pending 已标记为已注入（等待 LLM 实际执行日终）");
           } catch {
-            // 清理失败不影响注入
+            // 标记失败不影响注入
+          }
+
+          // A层：写入 protocol-turn-active 标记，使本轮成为独立协议轮
+          // 下轮检测到此文件 → 清除标记 → 正常处理用户消息
+          try {
+            const turnActivePath = path.join(workspaceDir, "memory", ".heartbeat", "protocol-turn-active.json");
+            const dir = path.dirname(turnActivePath);
+            if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+            const tmpActivePath = turnActivePath + ".tmp";
+            fs.writeFileSync(tmpActivePath, JSON.stringify({
+              protocol: "full",
+              created_at: new Date().toISOString(),
+            }, null, 2), "utf-8");
+            fs.renameSync(tmpActivePath, turnActivePath);
+            log.info("📋 A层: 协议轮标记已写入 protocol-turn-active.json");
+          } catch {
+            // 写入失败不阻塞协议注入
           }
 
           // 直接返回，跳过正常场景分发
@@ -517,7 +565,7 @@ export function createBeforePromptBuildHook(pluginWorkspaceDir?: string) {
       }
     }
 
-    // V3.8.8-beta2: 提取最后一条用户消息文本（conversation 场景用于 intent-resolver）
+    // V3.8.8-beta3: 提取最后一条用户消息文本（conversation 场景用于 intent-resolver）
     let userMessage: string | undefined;
     if (scenario === "conversation" && event.messages?.length > 0) {
       const messages = event.messages as Array<{ role?: string; content?: unknown }>;

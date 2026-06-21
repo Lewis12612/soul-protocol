@@ -12,7 +12,7 @@
 |------|------|------|
 | SOUL.md | workspace/ | 人格预设（"我是谁"） |
 | IDENTITY.md | workspace/ | 身份标识（名字/风格/emoji） |
-| USER.md | workspace/ | 老师画像 |
+| USER.md | workspace/ | 用户画像 |
 | MEMORY.md | workspace/ | 核心认知（人格摘要） |
 | AGENTS.md | workspace/ | 启动流程+记忆规则+安全红线 |
 

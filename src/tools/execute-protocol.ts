@@ -1,5 +1,5 @@
 // ───────────────────────────────────────────────────────────────────────
-// execute_protocol 工具 — LLM 主动调用协议通道（V3.8.8-beta2 新增）
+// execute_protocol 工具 — LLM 主动调用协议通道（V3.8.8-beta3 修复）
 //
 // 通过 api.registerTool() 注册，让 LLM 可以主动执行协议模块：
 // - full:           日终归档 (check-full.sh)
@@ -18,9 +18,11 @@ import * as path from "path";
 import { execSync } from "child_process";
 import type { OpenClawPluginApi } from "../types.js";
 import { loadSleepinessConfig } from "../utils/sleepiness-config.js";
+import { getExtraBasePath, getHomeDir } from "../utils/agent-config.js";
 import { getTodayStr } from "../modules/memory/reader.js";
 import { buildWeeklyProtocol, buildMonthlyProtocol, buildYearlyProtocol } from "../modules/memory/consolidation.js";
-import { createLogger } from "../utils/logger.js";
+import { buildProtocol } from "../protocol.js";
+import { createLogger, logInfo, logError } from "../utils/logger.js";
 
 const log = createLogger("tool:execute-protocol");
 
@@ -34,18 +36,6 @@ type ProtocolType = (typeof VALID_PROTOCOLS)[number];
 
 const DEDUP_COOLDOWN_MS = 30 * 60 * 1000; // 30 分钟冷却
 const SCRIPT_TIMEOUT_MS = 30000;
-
-// EXTRA 路径（与 agent-config.ts 一致）
-function getExtraBasePath(workspaceDir: string): string {
-  const configPath = path.join(workspaceDir, "skills", "soul-protocol", "openclaw.plugin.json");
-  try {
-    if (fs.existsSync(configPath)) {
-      const d = JSON.parse(fs.readFileSync(configPath, "utf-8"));
-      return d.agentConfig?.extraBasePath || "/tmp/openclaw-dialogue-logs";
-    }
-  } catch {}
-  return "/tmp/openclaw-dialogue-logs";
-}
 
 // ── 状态文件路径常量 ──────────────────────────────────────────────────
 
@@ -64,7 +54,7 @@ export function registerExecuteProtocolTool(api: OpenClawPluginApi): void {
       ?.workspaceDir as string
     ?? (api.config?.workspace?.dir as string)
     ?? process.env.OPENCLAW_WORKSPACE_DIR
-    ?? (process.env.HOME ? `${process.env.HOME}/.openclaw/workspace` : process.cwd());
+    ?? path.join(getHomeDir(), ".openclaw", "workspace");
 
   api.registerTool({
     name: "execute_protocol",
@@ -93,6 +83,10 @@ export function registerExecuteProtocolTool(api: OpenClawPluginApi): void {
       const reason = (params.reason as string) || "未指定";
 
       log.info("🔧 execute_protocol 被调用", { protocol, reason });
+      logInfo("protocol", "executed", `LLM调用 execute_protocol: ${protocol}`, {
+        protocol,
+        source: reason,
+      });
 
       // ── 1. 参数验证 ──────────────────────────────────────────
       if (!VALID_PROTOCOLS.includes(protocol as ProtocolType)) {
@@ -125,8 +119,30 @@ export function registerExecuteProtocolTool(api: OpenClawPluginApi): void {
       // ── 4. 更新状态 ──────────────────────────────────────────
       updateState(protocol as ProtocolType, workspaceDir);
 
+      // B层：对于 full 协议，记录 protocol:confirmed 确认日志
+      if (protocol === "full") {
+        logInfo("protocol", "confirmed", "LLM通过tool确认接收日终协议", {
+          protocol: "full",
+          source: reason,
+        });
+      }
+
+      // B层：对于 full 协议，构建完整协议清单附加到返回结果
+      let protocolChecklist = "";
+      if (protocol === "full" && workspaceDir) {
+        try {
+          // 从脚本输出提取 JSON 用于 buildProtocol
+          const jsonMatch = resultText.match(/\{[\s\S]*\}/);
+          if (jsonMatch) {
+            const fullResult = JSON.parse(jsonMatch[0]);
+            const checklist = buildProtocol("full", fullResult, workspaceDir);
+            protocolChecklist = `\n\n---\n📋 **协议执行清单**（后续步骤参考）:\n${checklist}`;
+          }
+        } catch { /* 构建失败不影响正常返回 */ }
+      }
+
       return {
-        content: [{ type: "text", text: resultText }],
+        content: [{ type: "text", text: resultText + protocolChecklist }],
       };
     },
   });
@@ -495,7 +511,7 @@ function querySleepiness(workspaceDir: string): string {
   let memoryLoad = 0;
   try {
     const today = new Date().toISOString().slice(0, 10);
-    const bp = getExtraBasePath(workspaceDir);
+    const bp = getExtraBasePath();
     const extraPath = path.join(bp, today.slice(0, 4), today.slice(5, 7), today);
     if (fs.existsSync(extraPath)) {
       const files = fs.readdirSync(extraPath);
@@ -627,6 +643,7 @@ function updateState(protocol: ProtocolType, workspaceDir: string): void {
         }, null, 2), "utf-8");
         fs.renameSync(tmpPath, eodPath);
         log.info("✅ last-eod.json 已更新");
+        logInfo("eod", "step_done", "last-eod.json 已更新", { step: "last-eod" });
       } catch (err) {
         log.warn("last-eod.json 更新失败", { error: String(err) });
       }

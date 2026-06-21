@@ -7,6 +7,7 @@
 
 import * as fs from "fs";
 import * as path from "path";
+import * as os from "os";
 
 // ── 配置结构 ────────────────────────────────────────────────────────────
 
@@ -17,6 +18,11 @@ interface AgentConfig {
   dreamAgentName: string;
   /** EXTRA 对话日志基础路径（不含日期子目录） */
   extraBasePath: string;
+  /** HOME 目录——可覆盖，未设置时自动 os.homedir() */
+  homeDir: string;
+  /** 用户 HOME 目录（用于路径派生） */
+  /** 工作目录（从插件初始化时传入） */
+  workspaceDir: string;
 }
 
 // ── 缓存 ────────────────────────────────────────────────────────────────
@@ -28,7 +34,9 @@ let _config: AgentConfig | null = null;
 const DEFAULTS: AgentConfig = {
   agentName: "agent",
   dreamAgentName: "agent的梦",
-  extraBasePath: "/tmp/openclaw-dialogue-logs",
+  extraBasePath: path.join(os.homedir(), "dialogue-logs"),
+  homeDir: os.homedir(),
+  workspaceDir: "",
 };
 
 // ── 公开 API ────────────────────────────────────────────────────────────
@@ -57,6 +65,8 @@ export function initAgentConfig(workspaceDir: string): void {
         agentName: agentConfig?.agentName || DEFAULTS.agentName,
         dreamAgentName: agentConfig?.dreamAgentName || DEFAULTS.dreamAgentName,
         extraBasePath: agentConfig?.extraBasePath || DEFAULTS.extraBasePath,
+        homeDir: agentConfig?.homeDir || DEFAULTS.homeDir,
+        workspaceDir: agentConfig?.workspaceDir || workspaceDir,
       };
     } else {
       _config = { ...DEFAULTS };
@@ -85,4 +95,14 @@ export function getSpawnExecutor(): string {
 /** 获取 EXTRA 对话日志基础路径 */
 export function getExtraBasePath(): string {
   return _config?.extraBasePath || DEFAULTS.extraBasePath;
+}
+
+/** 获取 HOME 目录（优先配置，fallback os.homedir()） */
+export function getHomeDir(): string {
+  return _config?.homeDir || DEFAULTS.homeDir;
+}
+
+/** 获取工作目录 */
+export function getWorkspaceDir(): string {
+  return _config?.workspaceDir || DEFAULTS.workspaceDir;
 }

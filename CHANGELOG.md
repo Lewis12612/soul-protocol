@@ -67,3 +67,26 @@
 - Identity file parsing (SOUL / AGENTS / MEMORY / IDENTITY / USER)
 - Safety rule enforcement via before-tool-call hook
 - Protocol injection via before-prompt-build hook
+
+---
+
+## V3.8.8-beta3 — 2026-06-21
+
+### P0 修复
+- **eod-pending 假完成**：`before-prompt-build.ts` 注入点不再更新 `last-eod.json`，改为标记 `eod-pending.json` 的 `injected:true`。`last-eod.json` 仅由 `execute-protocol.ts` 在 LLM 实际执行日终时更新
+- **注入≠执行**：`protocol.ts` Full 协议头部新增强制执行指令
+- **模板路径错误**：`dream-extract-prompt.md` 和 `full-workflow.md` 中 18 处 `templates/` → `templates/archive/`
+- **heartbeat 过早更新**：3 处 `updateLastEodTime` 从 dreaming/exhausted 分支移除
+
+### P1 修复
+- **Spawn 超时配置化**：`sleepiness.json` 新增 `spawn.timeoutSeconds`（180s 归档 / 300s 凝练）
+- **Spawn task 增强**：`full-workflow.md` 增加 EXTRA 路径探针 + 日期歧义消除 + "忽略 memory/*.md" 防护
+
+### 路径参数化
+- `agent-config.ts` 新增 `homeDir`/`workspaceDir`，`os.homedir()` 替代硬编码
+- `execute-protocol.ts` 删除本地 `getExtraBasePath`，统一 agent-config
+- `before-prompt-build.ts`/`sleepiness-watchdog.cjs`/`check-full.sh` 消除所有 `/tmp/openclaw-*`、`/home/openclaw` 硬编码
+- `full-workflow.md` 所有路径改为 `{workspace}` 占位符
+
+### 多实例同步
+- `dialogue-logger` 路径修正 + `sleepiness-daemon.cjs` → deprecated/ + 版本号对齐

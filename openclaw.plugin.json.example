@@ -1,12 +1,14 @@
 {
   "id": "soul-protocol",
   "name": "Soul Protocol",
-  "version": "3.8.8-beta2",
-  "description": "灵魂协议插件 - 动态规则 + 钉死执行的身份层协议引擎",
+  "version": "3.8.8-beta3",
+  "description": "灵魂协议插件 - 动态规则 + 钉死执行 + 睡意驱动的身份层协议引擎",
   "agentConfig": {
-    "agentName": "your-agent-name",
-    "dreamAgentName": "your-agents-dream",
-    "extraBasePath": "/path/to/dialogue-logs"
+    "agentName": "{{AGENT_NAME}}",
+    "dreamAgentName": "{{DREAM_AGENT_NAME}}",
+    "extraBasePath": "{{EXTRA_BASE_PATH}}",
+    "workspaceDir": "{{WORKSPACE_DIR}}",
+    "homeDir": "{{HOME_DIR}}"
   },
   "configSchema": {
     "type": "object",
@@ -22,12 +24,7 @@
       },
       "logLevel": {
         "type": "string",
-        "enum": [
-          "debug",
-          "info",
-          "warn",
-          "error"
-        ],
+        "enum": ["debug", "info", "warn", "error"],
         "default": "info"
       },
       "strictMode": {
@@ -35,8 +32,6 @@
         "default": false
       }
     },
-    "required": [
-      "workspaceDir"
-    ]
+    "required": ["workspaceDir"]
   }
 }

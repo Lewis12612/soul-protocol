@@ -1,6 +1,6 @@
 {
   "name": "soul-protocol",
-  "version": "3.8.8-beta2",
+  "version": "3.8.8-beta3",
   "description": "\u7075\u9b42\u534f\u8bae\u63d2\u4ef6 - \u52a8\u6001\u89c4\u5219 + \u9489\u6b7b\u6267\u884c\u7684\u8eab\u4efd\u5c42\u534f\u8bae\u5f15\u64ce",
   "type": "module",
   "main": "dist/index.js",

@@ -11,6 +11,16 @@ import type { SleepinessLevel } from "../modules/heartbeat.js";
 
 // ── 类型 ────────────────────────────────────────────────────────────────
 
+export interface LoggingConfig {
+  logLevel: string;
+  maxSizeMB: number;
+  pruning: {
+    enabled: boolean;
+    retentionDays: number;
+    maxArchiveFiles: number;
+  };
+}
+
 export interface SleepinessConfig {
   weights: { circadian: number; uptime: number; memoryLoad: number };
   thresholds: Array<{
@@ -21,7 +31,21 @@ export interface SleepinessConfig {
   }>;
   dispatch: Record<string, string>;
   checkScriptsPath: string;
+  spawn?: { timeoutSeconds: Record<string, number> };
+  logging?: LoggingConfig;
 }
+
+// ── 日志配置默认值 ────────────────────────────────────────────────────
+
+const DEFAULT_LOGGING: LoggingConfig = {
+  logLevel: "info",
+  maxSizeMB: 10,
+  pruning: {
+    enabled: true,
+    retentionDays: 30,
+    maxArchiveFiles: 50,
+  },
+};
 
 // ── 缓存 ────────────────────────────────────────────────────────────────
 
@@ -46,7 +70,7 @@ const DEFAULTS: SleepinessConfig = {
     exhausted: "force_full",
     dreaming: "auto_eod",
   },
-  checkScriptsPath: "skills/soul-system/scripts",
+  checkScriptsPath: "skills/soul-protocol/scripts",
 };
 
 // ── 公开 API ────────────────────────────────────────────────────────────
@@ -89,4 +113,9 @@ export function loadSleepinessConfig(workspaceDir: string): SleepinessConfig {
  */
 export function getCheckScriptsPath(workspaceDir: string): string {
   return loadSleepinessConfig(workspaceDir).checkScriptsPath;
+}
+
+/** 获取日志系统配置（含剪枝参数） */
+export function getLoggingConfig(workspaceDir: string): LoggingConfig {
+  return loadSleepinessConfig(workspaceDir).logging || DEFAULT_LOGGING;
 }

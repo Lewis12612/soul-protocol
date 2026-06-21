@@ -4,7 +4,7 @@
 // ───────────────────────────────────────────────────────────────────────
 
 import type { DispatchContext, ScenarioHandler } from "../types.js";
-import { createLogger } from "../utils/logger.js";
+import { createLogger, logInfo, logError, logWarn } from "../utils/logger.js";
 import { buildProtocol } from "../protocol.js";
 import {
   updateSessionState,
@@ -126,6 +126,11 @@ export const heartbeatScenario: ScenarioHandler = {
         // 💤 睡意极限 → 强制注入日终协议
         // 这是兜底：即使心跳cron从未触发，用户持续对话也会触发日终
         log.info(`💤 ${sleepiness.level} — 用户对话中强制注入日终协议`);
+        logInfo("heartbeat", "state_change", `对话中睡意达到${sleepiness.level}，注入日终协议`, {
+          from: "sleepy",
+          to: sleepiness.level,
+          trigger: "conversation_sleepiness_check",
+        });
         const fullResult = await executeCheckScriptWithLog(
           workspaceDir, "check-full.sh", "full", ctx.trigger,
         );
@@ -139,10 +144,19 @@ export const heartbeatScenario: ScenarioHandler = {
           systemParts.push(weeklyProtocol);
           systemParts.push("⚡ Full 协议的 spawn actions（daily/deep/work归档）与周梦协议的 spawn actions（W1/M1/Y1）互不依赖，可并行 sessions_spawn");
         }
-        updateLastEodTime(workspaceDir);
-        // 清理可能存在的 watchdog eod-pending 残留（去重）
+        // last-eod 不在此更新（由 execute-protocol.ts 在 LLM 真正执行日终时更新）
+        // 标记 eod-pending 为已注入（去重，保留文件供 execute-protocol.ts 验证）
         const pendingFile = path.join(workspaceDir, "memory", ".heartbeat", "eod-pending.json");
-        try { if (fs.existsSync(pendingFile)) fs.unlinkSync(pendingFile); } catch {}
+        try {
+          if (fs.existsSync(pendingFile)) {
+            const pfRaw = fs.readFileSync(pendingFile, "utf-8");
+            const pfData = JSON.parse(pfRaw);
+            const pfTmp = pendingFile + ".tmp";
+            fs.writeFileSync(pfTmp, JSON.stringify({ ...pfData, injected: true, injected_at: new Date().toISOString() }), "utf-8");
+            fs.renameSync(pfTmp, pendingFile);
+            log.info("✅ eod-pending 已标记为已注入");
+          }
+        } catch {}
         log.info("✅ 日终协议已注入用户消息上下文");
       } else if (sleepiness.level === "sleepy") {
         // 微困提示：仅注入自然的提醒文本，不触发完整协议
@@ -200,6 +214,11 @@ export const heartbeatScenario: ScenarioHandler = {
     if (sleepiness.level === "dreaming") {
       // 💤 入梦协议 — 撑不住了，自动触发，不等待
       log.info("💤 入梦协议触发 — 自动日终");
+      logInfo("heartbeat", "state_change", "睡意达到 dreaming，触发入梦协议", {
+        from: "exhausted",
+        to: "dreaming",
+        trigger: "heartbeat_cron",
+      });
       const fullResult = await executeCheckScriptWithLog(
         workspaceDir, "check-full.sh", "full", ctx.trigger,
       );
@@ -211,10 +230,15 @@ export const heartbeatScenario: ScenarioHandler = {
         systemParts.push(weeklyProtocol);
         systemParts.push("⚡ Full 协议的 spawn actions 与周梦协议的 spawn actions 互不依赖，可并行 sessions_spawn");
       }
-      updateLastEodTime(workspaceDir);
+      // last-eod 不在此更新（由 execute-protocol.ts 在 LLM 真正执行时更新）
     } else if (sleepiness.level === "exhausted") {
       // 😵 睡意极限 → 强制日终
       log.info("😵 睡意达到极限，强制执行 Full 检查");
+      logInfo("heartbeat", "state_change", "睡意达到 exhausted，强制执行日终", {
+        from: "sleepy",
+        to: "exhausted",
+        trigger: "heartbeat_cron",
+      });
       const fullResult = await executeCheckScriptWithLog(
         workspaceDir, "check-full.sh", "full", ctx.trigger,
       );
@@ -225,7 +249,7 @@ export const heartbeatScenario: ScenarioHandler = {
         systemParts.push(weeklyProtocol);
         systemParts.push("⚡ Full 协议的 spawn actions 与周梦协议的 spawn actions 互不依赖，可并行 sessions_spawn");
       }
-      updateLastEodTime(workspaceDir);
+      // last-eod 不在此更新（由 execute-protocol.ts 在 LLM 真正执行时更新）
     } else if (sleepiness.level === "sleepy") {
       // 😴 睡意明显 → 检查是否需要 Medium/Full
       log.info("😴 睡意明显，检查是否需要日终");
@@ -279,6 +303,12 @@ export const heartbeatScenario: ScenarioHandler = {
       systemParts: systemParts.length,
       memoryParts: memoryParts.length,
       hasProtocolContent: prependSystemContext.length > 0,
+    });
+    logInfo("heartbeat", "health_check", `心跳检查完成: ${checkType}`, {
+      checkType,
+      durationMs: lightDuration,
+      systemParts: systemParts.length,
+      sleepinessLevel: sleepiness?.level ?? "N/A",
     });
 
     // 段5修正：用户只看简短结果，协议注入系统（prependSystemContext）
@@ -385,7 +415,8 @@ export function getSleepiness(workspaceDir: string): SleepinessState {
   };
 }
 
-/** 生物周期因子：基于时间的自然作息曲线 */
+/** 生物周期因子：基于时间的自然作息曲线
+ *  公式与 scripts/sleepiness-factors.cjs::calcCircadianFactor 保持同步 */
 function calcCircadianFactor(timeOfDay: number): number {
   // 深夜 22:00-06:00 → 高峰 1.0
   if (timeOfDay >= 22 || timeOfDay < 6) return 1.0;
@@ -397,7 +428,8 @@ function calcCircadianFactor(timeOfDay: number): number {
   return 0.2 + (timeOfDay - 18) * 0.2;
 }
 
-/** 运行时间因子：距上次日终的时长 */
+/** 运行时间因子：距上次日终的时长
+ *  公式与 scripts/sleepiness-factors.cjs::calcUptimeFactor 保持同步 */
 function calcUptimeFactor(hoursSinceLastEod: number): number {
   if (hoursSinceLastEod < 2) return 0;
   if (hoursSinceLastEod < 8) return (hoursSinceLastEod - 2) / 6 * 0.5;
@@ -405,7 +437,8 @@ function calcUptimeFactor(hoursSinceLastEod: number): number {
   return Math.min(1.0, 0.8 + (hoursSinceLastEod - 16) / 24 * 0.2);
 }
 
-/** 记忆储量因子：EXTRA 层文件大小 */
+/** 记忆储量因子：EXTRA 层文件大小
+ *  公式与 scripts/sleepiness-factors.cjs::calcMemoryLoadFactor 保持同步 */
 function calcMemoryLoadFactor(workspaceDir: string): number {
   try {
     const today = new Date().toISOString().slice(0, 10);
@@ -438,6 +471,7 @@ function calcMemoryLoadFactor(workspaceDir: string): number {
   }
 }
 
+//  公式与 scripts/sleepiness-factors.cjs::calcHoursSinceLastEod 保持同步
 function calcHoursSinceLastEod(workspaceDir: string): number {
   const filePath = path.join(workspaceDir, LAST_EOD_FILE);
   try {
@@ -611,10 +645,16 @@ async function executeProtocolDirect(
         systemParts.push(wp);
         systemParts.push("⚡ Full 协议的 spawn actions 与周梦协议的 spawn actions 互不依赖，可并行 sessions_spawn");
       }
-      updateLastEodTime(workspaceDir);
-      // 清理 eod-pending 残留（去重）
+      // 标记 eod-pending 已注入（不更新 last-eod，由 execute-protocol 的 updateState 在 LLM 执行后更新）
       const pf = path.join(workspaceDir, "memory", ".heartbeat", "eod-pending.json");
-      try { if (fs.existsSync(pf)) fs.unlinkSync(pf); } catch { /* ignore */ }
+      try {
+        if (fs.existsSync(pf)) {
+          const cur = JSON.parse(fs.readFileSync(pf, "utf-8"));
+          cur.injected = true;
+          cur.injected_at = new Date().toISOString();
+          fs.writeFileSync(pf, JSON.stringify(cur), "utf-8");
+        }
+      } catch { /* ignore */ }
       break;
     }
     case "medium": {

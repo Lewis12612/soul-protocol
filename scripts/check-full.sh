@@ -15,7 +15,7 @@ MEMORY_CORE="$WORKSPACE/memory/memory-core"
 MEMORY_DIR="$WORKSPACE/memory"
 STATE_DIR="$MEMORY_DIR/.heartbeat"
 LAST_CHECK="$STATE_DIR/last-full.json"
-EXTRA_DIR="${EXTRA_BASE_PATH:-/tmp/openclaw-dialogue-logs}"
+EXTRA_DIR="${EXTRA_BASE_PATH:-${HOME}/dialogue-logs}"
 
 CURRENT_DATE=$(date +%Y-%m-%d)
 CURRENT_TIME=$(date -Iseconds)
@@ -512,12 +512,6 @@ TARGET_DATE=$(echo "$ACTION_JSON" | jq -r '.target_date')
 REASON=$(echo "$ACTION_JSON" | jq -r '.reason')
 
 INDEX_CONSISTENT=$(echo "$INDEX_JSON" | jq -r '.consistent')
-
-if [ "$INDEX_CONSISTENT" = "false" ]; then
-    echo ""
-    echo "⚠️ INDEX 不一致，建议执行："
-    echo "   bash ~/.openclaw/workspace/skills/heartbeat/scripts/update-index.sh"
-fi
 
 # 日终任务行动提示
 case "$ACTION" in

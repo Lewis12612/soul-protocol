@@ -10,7 +10,7 @@ import type {
   PluginHookToolContext,
 } from "../types.js";
 import type { ParsedRules, SafetyRule } from "../rules.js";
-import { createLogger, logInterception } from "../utils/logger.js";
+import { createLogger, logInfo } from "../utils/logger.js";
 import { validateToolCall, validateCommand, DANGEROUS_PATTERNS } from "../utils/validator.js";
 
 const log = createLogger("hook:before-tool-call");
@@ -39,14 +39,11 @@ export function createBeforeToolCallHook(rules: ParsedRules) {
     // 1. 安全红线检查（只检查命令级危险操作）
     const safetyResult = checkSafetyRules(rules.safetyRules, toolName, params);
     if (safetyResult) {
-      logInterception(
-        log,
-        safetyResult.triggeredRule?.id ?? "unknown",
-        safetyResult.action ?? "block",
-        toolName,
-        params,
-        safetyResult.reason ?? "",
-      );
+      logInfo("safety", "intercepted", safetyResult.reason ?? "tool call blocked", {
+        rule: safetyResult.triggeredRule?.id ?? "unknown",
+        action: safetyResult.action ?? "block",
+        tool: toolName,
+      });
 
       return buildToolCallResult(safetyResult);
     }
@@ -128,7 +125,7 @@ function buildToolCallResult(
     blockReason: result.reason ?? "安全红线拦截",
     requireApproval: result.action === "ask" ? {
       title: "安全审批",
-      description: result.reason ?? "需要老师确认",
+      description: result.reason ?? "需要用户确认",
       severity: "warning",
     } : undefined,
   };

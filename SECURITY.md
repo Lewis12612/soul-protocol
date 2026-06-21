@@ -4,7 +4,7 @@
 
 | Version | Security Updates |
 |---------|:---------------:|
-| V3.8.8-beta2 | ✅ |
+| V3.8.8-beta3 | ✅ |
 | V3.8.8-beta1 | ❌ (superseded) |
 | < V3.8.8 | ❌ |
 
@@ -21,7 +21,7 @@ If you discover a security vulnerability, please do **NOT** open a public Issue.
 Send email to the maintainer (address to be published with initial release), including:
 
 ```
-**Affected Version**: V3.8.8-beta2
+**Affected Version**: V3.8.8-beta3
 **Vulnerability Type**: (e.g., command injection / path traversal / information disclosure)
 **Affected Module**: (e.g., execute-protocol.ts / heartbeat.ts)
 **Steps to Reproduce**:

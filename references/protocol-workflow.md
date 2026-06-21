@@ -128,7 +128,7 @@ create_l2  ──→  full  ──→  weekly  ──→  monthly  ──→  ye
 
 ### ⚠️ exhausted 是唯一例外
 
-当 `sleepiness_query` 返回 **exhausted** 等级时，即使老师没有主动说要做日终，你也**应该主动提议或执行** full 协议。这是防止记忆流失的唯一安全阀。
+当 `sleepiness_query` 返回 **exhausted** 等级时，即使user没有主动说要做日终，你也**应该主动提议或执行** full 协议。这是防止记忆流失的唯一安全阀。
 
 ---
 
@@ -165,10 +165,10 @@ create_l2  ──→  full  ──→  weekly  ──→  monthly  ──→  ye
 
 | 场景 | 你该怎么做 |
 |------|-----------|
-| 老师说"做日终" | `execute_protocol({ protocol: "full", reason: "用户明确要求日终" })` |
-| 老师问"困不困" | `execute_protocol({ protocol: "sleepiness_query", reason: "用户询问状态" })` → 回复查询结果 |
-| 老师说"帮我整理一下" | 确认："你是想做日终归档吗？" → 确认后 full |
-| 老师问"这周怎么样" | 确认："要做周终总结吗？" → 确认后 weekly |
+| user说"做日终" | `execute_protocol({ protocol: "full", reason: "用户明确要求日终" })` |
+| user问"困不困" | `execute_protocol({ protocol: "sleepiness_query", reason: "用户询问状态" })` → 回复查询结果 |
+| user说"帮我整理一下" | 确认："你是想做日终归档吗？" → 确认后 full |
+| user问"这周怎么样" | 确认："要做周终总结吗？" → 确认后 weekly |
 | 睡意 exhausted | 主动说："我检测到睡意已达 exhausted，记忆可能流失。要现在做日终吗？" |
 | 日终刚做完又说"归档" | 告知："日终已在 X 分钟前完成，30 分钟内去重保护中" |
 

@@ -8,7 +8,8 @@ import type { OpenClawPluginApi } from "./types.js";
 // 导入解析器
 import { parseIdentityFiles } from "./parser.js";
 import type { ParsedRules } from "./rules.js";
-import { createLogger } from "./utils/logger.js";
+import { createLogger, logInitFromConfig } from "./utils/logger.js";
+import { loadSleepinessConfig } from "./utils/sleepiness-config.js";
 
 // 导入钩子
 import { createBeforePromptBuildHook } from "./hooks/before-prompt-build.js";
@@ -27,7 +28,7 @@ const log = createLogger("soul-protocol");
  * 灵魂协议插件注册函数
  *
  * 设计原则：
- * - 规则来源：动态（从身份层文件读取，老师可编辑）
+ * - 规则来源：动态（从身份层文件读取，用户可编辑）
  * - 执行逻辑：钉死（钩子框架固定，系统强制执行）
  * - 生效方式：解析文件 → 钩子配置 → 自动执行
  */
@@ -44,6 +45,15 @@ export default function register(api: OpenClawPluginApi): void {
   const logLevel = (pluginConfig.logLevel as string) ?? "info";
 
   log.setLevel(logLevel as any);
+
+  // 初始化结构化日志系统（JSONL → memory/.heartbeat/logs/plugin.log）
+  let sleepinessConfigForLog;
+  try {
+    sleepinessConfigForLog = loadSleepinessConfig(workspaceDir);
+  } catch {
+    sleepinessConfigForLog = undefined;
+  }
+  logInitFromConfig(workspaceDir, sleepinessConfigForLog ?? { logLevel: "info" } as any);
 
   if (!enabled) {
     log.info("灵魂协议插件已禁用");

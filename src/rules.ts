@@ -191,7 +191,7 @@ export const THREE_NO_PRINCIPLES: ExecutionLesson[] = [
   {
     id: "no_confirm_no_act",
     principle: "不确认不动手",
-    description: "操作前确认老师意图",
+    description: "操作前确认用户意图",
     violationHandling: "暂停，询问",
   },
   {
